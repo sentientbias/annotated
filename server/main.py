@@ -17,6 +17,7 @@ from html import escape
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import auth
@@ -162,6 +163,11 @@ auth.init(_shared)
 clips.init(_shared)
 app.include_router(auth.router)
 app.include_router(clips.router)
+
+# demo video + other public statics (server/static/)
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(_static_dir, exist_ok=True)
+app.mount("/demo", StaticFiles(directory=_static_dir), name="demo")
 
 
 def now_iso():
@@ -719,6 +725,8 @@ def homepage():
         "<p>Attach source links to every annotation. The crowd's stance meter shows who's winning.</p></div>"
         "</div>"
         "<h2 class='sec'>Hottest disputes right now</h2>" + hot_html +
+        "<h2 class='sec'>Watch the demo</h2>"
+        "<video src='/demo/annotated-demo.mp4' controls style='width:100%;border-radius:12px;background:#111'></video>"
         "<h2 class='sec'>How it works</h2>"
         "<p>1. Install the extension. 2. Select a sentence — or hit <b>⚑ Clip 90s</b> on any video. "
         "3. Your annotation lands on a public permalink with a stance meter, receipts, and replies. "
