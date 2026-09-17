@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -32,6 +33,16 @@ HANDLE_RE = re.compile(r"^[a-zA-Z0-9_.-]{2,32}$")
 RESERVED_HANDLES = {"admin", "administrator", "support", "annotated", "system", "moderator"}
 
 app = FastAPI(title="Annotated API", version="0.1.0")
+
+# The Chrome extension posts annotations/clips from arbitrary sites, so the
+# API must accept cross-origin requests (with the extension's auth headers).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Annotated-Token", "Authorization"],
+    max_age=86400,
+)
 
 
 def db():

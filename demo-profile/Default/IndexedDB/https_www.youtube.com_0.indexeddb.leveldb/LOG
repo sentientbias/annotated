@@ -1,0 +1,3 @@
+2026/09/17-01:44:38.504 c76 Reusing MANIFEST /home/hatch/workspace/annotated/demo-profile/Default/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/09/17-01:44:38.506 c76 Recovering log #3
+2026/09/17-01:44:38.522 c76 Reusing old log /home/hatch/workspace/annotated/demo-profile/Default/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/000003.log 
