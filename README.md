@@ -1,4 +1,6 @@
-# ⚑ Annotated — Dispute Anything
+# ⚑ Annotated — Dispute it. Clip it. Prove it — with receipts.
+
+**Live:** https://annotated-api.onrender.com · **Demo:** https://annotated-api.onrender.com/demo/annotated-demo.mp4 · **Install:** https://annotated-api.onrender.com/install
 
 Highlight any sentence on the web and dispute it. **Clip up to 90 seconds**
 from any YouTube video or podcast, downscaled and linked back to the source.
@@ -14,6 +16,12 @@ Built for the [This Week in Startups $5,000 annotation bounty](https://x.com/twi
 - **Pick a stance** — Dispute / Agree / Context — and add your receipt (link, quote, reasoning)
 - **Sentences with annotations get highlighted** in the page, with a count badge; click to read the thread in the side panel
 
+**Consensus meter**
+- Every page, thread, and permalink shows a live three-color meter: ⚑ disputes (red) · ✓ agrees (green) · ◈ context (blue) — see who's winning at a glance
+
+**Receipts**
+- Attach up to 5 source links per annotation; the server fetches real titles (SSRF-hardened) and renders 🧾 receipt cards in the side panel, permalinks, and feed
+
 **Video & audio clips (bounty spec)**
 - On any YouTube video, hit **⚑ Clip 90s** → pick start time + duration (≤ 90s)
 - The server cuts the segment, downscales video to 240p, and hosts it
@@ -22,11 +30,14 @@ Built for the [This Week in Startups $5,000 annotation bounty](https://x.com/twi
 - Podcast episodes: same flow, audio-only
 
 **Social layer**
-- **Public feed** (`/feed`) with follow + comment
+- **Public feed** (`/feed`) with follow + comment, consensus meters, receipt counts, clip cards
+- **Annotation permalinks** (`/a/{id}`) — every dispute is a shareable page with OG cards for X
+- **Share-to-X** on every permalink, feed card, and clip page
 - **Profiles** — every handle gets a profile with history, follower counts
 - **Follows** — follow readers whose disputes you respect
 - **Trending** — `/trending` shows the most-disputed sentences right now
 - **Commentary** supports text and recorded audio (🎙 in the side panel)
+- **One-click install guide** at `/install` — judges can sideload in 60 seconds
 
 **Sign-in**
 - X or Google OAuth only — no email/password (per the bounty brief)
