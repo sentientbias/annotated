@@ -1,18 +1,36 @@
-# ⚑ Annotated — Dispute Any Sentence
+# ⚑ Annotated — Dispute Anything
 
-Highlight any sentence on the web and dispute it. See what others flagged,
-follow sharp readers, ride the trending disputes.
+Highlight any sentence on the web and dispute it. **Clip up to 90 seconds**
+from any YouTube video or podcast, downscaled and linked back to the source.
+Reply with text or recorded audio. Sign in with X or Google. Follow sharp
+readers, ride the trending disputes.
 
 Built for the [This Week in Startups $5,000 annotation bounty](https://x.com/twistartups/status/2100269272899743841) — round two entry. MIT licensed, fully open source.
 
 ## What it does
 
+**Text annotations**
 - **Select any sentence** on any page → a "⚑ Dispute this" button appears
 - **Pick a stance** — Dispute / Agree / Context — and add your receipt (link, quote, reasoning)
 - **Sentences with annotations get highlighted** in the page, with a count badge; click to read the thread in the side panel
-- **Profiles** — every handle gets a profile with annotation history
+
+**Video & audio clips (bounty spec)**
+- On any YouTube video, hit **⚑ Clip 90s** → pick start time + duration (≤ 90s)
+- The server cuts the segment, downscales video to 240p, and hosts it
+- Every clip page links back to the original source and carries a visible
+  **File a claim** button (fair-use dispute path)
+- Podcast episodes: same flow, audio-only
+
+**Social layer**
+- **Public feed** (`/feed`) with follow + comment
+- **Profiles** — every handle gets a profile with history, follower counts
 - **Follows** — follow readers whose disputes you respect
-- **Trending** — `/trending` shows the most-disputed sentences on the web right now
+- **Trending** — `/trending` shows the most-disputed sentences right now
+- **Commentary** supports text and recorded audio (🎙 in the side panel)
+
+**Sign-in**
+- X or Google OAuth only — no email/password (per the bounty brief)
+- The extension links your account via a one-time code shown after OAuth
 
 ## Install (developer mode)
 
@@ -30,11 +48,17 @@ pip install -r server/requirements.txt
 uvicorn server.main:app --host 0.0.0.0 --port 8000
 ```
 
-SQLite-backed (`ANNOTATED_DB` env). Deploy to Render with `render.yaml`:
+SQLite-backed (`ANNOTATED_DB` env). Clip files land in `/data/clips`
+(`DATA_DIR` env). Deploy to Render with `render.yaml` (Docker: Python 3.12 +
+ffmpeg + yt-dlp, 1 GB disk at `/data`):
 
 ```bash
 render blueprint launch  # or connect the repo in the dashboard
 ```
+
+OAuth needs `X_CLIENT_ID` / `X_CLIENT_SECRET` and `GOOGLE_CLIENT_ID` /
+`GOOGLE_CLIENT_SECRET` env vars; the extension links accounts via the
+one-time code at `/auth/{x,google}/callback` → `POST /auth/token/verify`.
 
 ### API
 
