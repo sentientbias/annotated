@@ -69,15 +69,24 @@ def _process_clip(clip_id: str):
             tmp = tempfile.mkdtemp()
             try:
                 section = f"*{_ts(start)}-{_ts(end)}"
-                r = _run([
-                    "yt-dlp", "--download-sections", section,
-                    "-f", "bv*[height<=480]+ba/b[height<=480]/b",
-                    "--merge-output-format", "mp4",
-                    "-o", os.path.join(tmp, "src.%(ext)s"),
-                    "--no-playlist", source_url,
-                ])
-                if r.returncode != 0:
-                    return fail("download failed: " + (r.stderr or r.stdout)[-300:])
+                # Cycle player clients: YouTube bot-walls datacenter IPs on the
+                # default web client; the android client usually sails through.
+                dl_ok, dl_err = False, ""
+                for client in ("android", "default,-web", "default"):
+                    r = _run([
+                        "yt-dlp", "--download-sections", section,
+                        "--extractor-args", f"youtube:player_client={client}",
+                        "-f", "bv*[height<=480]+ba/b[height<=480]/b",
+                        "--merge-output-format", "mp4",
+                        "-o", os.path.join(tmp, "src.%(ext)s"),
+                        "--no-playlist", source_url,
+                    ])
+                    if r.returncode == 0:
+                        dl_ok = True
+                        break
+                    dl_err = (r.stderr or r.stdout)[-300:]
+                if not dl_ok:
+                    return fail("download failed: " + dl_err)
                 src = None
                 for f in os.listdir(tmp):
                     if f.startswith("src."):
