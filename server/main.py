@@ -214,7 +214,7 @@ def hide_clip(clip_id: str, h: HideIn):
 # ---------- routes ----------
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "annotated-api", "version": "0.2.3"}
+    return {"ok": True, "service": "annotated-api", "version": "0.3.0"}
 
 
 @app.post("/annotations", status_code=201)
