@@ -1,0 +1,31 @@
+/* Injected page styles for Annotated highlights + floating UI.
+   The composer and toasts live in shadow DOM (see content.js); these
+   classes are for highlight marks in the host page. */
+.annotated-hit {
+  background: linear-gradient(transparent 55%, rgba(255, 214, 64, 0.55) 55%);
+  border-bottom: 2px solid rgba(255, 180, 0, 0.7);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.15s ease;
+}
+.annotated-hit:hover {
+  background: rgba(255, 214, 64, 0.45);
+}
+.annotated-hit[data-stance="dispute"] {
+  background: linear-gradient(transparent 55%, rgba(255, 120, 120, 0.5) 55%);
+  border-bottom-color: rgba(230, 60, 60, 0.8);
+}
+.annotated-hit[data-count]::after {
+  content: attr(data-count);
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  background: #111;
+  color: #ffd640;
+  border-radius: 8px;
+  padding: 2px 6px;
+  margin-left: 4px;
+  vertical-align: super;
+  font-family: system-ui, sans-serif;
+}

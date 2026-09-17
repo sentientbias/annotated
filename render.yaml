@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: annotated-api
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r server/requirements.txt"
+    startCommand: "uvicorn server.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: ANNOTATED_DB
+        value: /data/annotated.db
+    disk:
+      name: annotated-data
+      mountPath: /data
+      sizeGB: 1
