@@ -47,10 +47,25 @@ def _run(cmd, timeout=600):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _duration_ok(path: str, want: float, tol: float = 5.0) -> bool:
+    """True if the media at path is no longer than want+tol seconds."""
+    r = _run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+              "-of", "csv=p=0", path], timeout=60)
+    try:
+        return float((r.stdout or "").strip()) <= want + tol
+    except ValueError:
+        return False
+
+
 def _cobalt_fetch(source_url: str, tmpdir: str):
     """Resolve a direct media URL via the cobalt API and fetch it.
 
     Returns (local_path, error). Empty error means success.
+
+    The full source file is downloaded here (cobalt gives no section
+    cutting), so the caller MUST apply -ss/-t in ffmpeg. The download is
+    hard-capped with --max-filesize to protect the 1GB persistent disk,
+    and the tmpdir is removed by the caller when done.
     """
     import json as _json
     import urllib.request
@@ -76,7 +91,11 @@ def _cobalt_fetch(source_url: str, tmpdir: str):
     if not media_url or not media_url.startswith("https://"):
         return None, "cobalt: no media url"
     out = os.path.join(tmpdir, "src.mp4")
-    r = _run(["curl", "-sL", "--max-time", 300, "-o", out, media_url], timeout=330)
+    # Bound the download: never fill the persistent disk with a full source.
+    r = _run(["curl", "-sL", "--max-time", 300, "--max-filesize", "500M",
+              "-o", out, media_url], timeout=330)
+    if r.returncode == 63:
+        return None, "cobalt: source exceeds 500MB cap"
     if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1024:
         return None, "cobalt: media fetch failed"
     return out, ""
@@ -121,26 +140,41 @@ def _process_clip(clip_id: str):
                         break
                     dl_err = (r.stderr or r.stdout)[-300:]
                 src = None
+                precut = False  # True only if yt-dlp --download-sections already cut it
                 if dl_ok:
                     for f in os.listdir(tmp):
                         if f.startswith("src."):
                             src = os.path.join(tmp, f)
+                            precut = True
                             break
                 # Strategy 2: cobalt API fallback (resolves a direct file URL).
+                # Cobalt returns the FULL source, so start/duration MUST be
+                # applied in the ffmpeg step below (precut stays False).
                 if not src:
                     src, cobalt_err = _cobalt_fetch(source_url, tmp)
                     if not src:
                         return fail("download failed: " + (dl_err or "")[-200:] + " | " + cobalt_err)
                 out = os.path.join(CLIP_DIR, f"{clip_id}.mp4")
-                r = _run([
-                    "ffmpeg", "-y", "-i", src,
-                    "-vf", "scale=426:240",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-                    "-c:a", "aac", "-b:a", "96k",
-                    out,
-                ])
+                ff = ["ffmpeg", "-y"]
+                if not precut:
+                    # Input seek + duration cap on the full source. Re-encode
+                    # after makes the output duration exact.
+                    ff += ["-ss", str(start), "-t", str(dur)]
+                ff += ["-i", src,
+                       "-vf", "scale=426:240",
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                       "-c:a", "aac", "-b:a", "96k",
+                       out]
+                r = _run(ff)
                 if r.returncode != 0 or not os.path.exists(out):
                     return fail("transcode failed")
+                # Guard: never publish a clip longer than requested (+5s tolerance).
+                if not _duration_ok(out, dur):
+                    try:
+                        os.remove(out)
+                    except OSError:
+                        pass
+                    return fail("clip duration exceeded requested length")
                 with _lock:
                     db.execute(
                         "UPDATE clips SET status='ready', file_path=? WHERE id=?",
