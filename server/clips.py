@@ -190,7 +190,7 @@ def _process_clip(clip_id: str):
                        out]
                 r = _run(ff)
                 if r.returncode != 0 or not os.path.exists(out):
-                    return fail("transcode failed")
+                    return fail("transcode failed: " + ((r.stderr or r.stdout or "")[-300:]))
                 # Guard: never publish a clip longer than requested (+5s tolerance).
                 if not _duration_ok(out, dur):
                     try:
