@@ -1,5 +1,16 @@
 (async () => {
   const $ = (id) => document.getElementById(id);
+  // Must stay in sync with normUrl() in content.js — both sides must query
+  // the same normalized URL or the popup count won't match the page highlights.
+  const normUrl = (u) => {
+    try {
+      const x = new URL(u);
+      x.hash = '';
+      ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','s','gclid','fbclid']
+        .forEach(p => x.searchParams.delete(p));
+      return x.toString();
+    } catch { return u; }
+  };
   const sync = await chrome.storage.sync.get(['annotated_api_base', 'annotated_handle']);
   const base = (sync.annotated_api_base || 'https://annotated-api.onrender.com').replace(/\/+$/, '');
   $('api').value = sync.annotated_api_base || '';
@@ -54,8 +65,8 @@
   })();
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const url = new URL(tab.url); url.hash = '';
-    const r = await fetch(base + '/annotations?url=' + encodeURIComponent(url.toString()));
+    const url = normUrl(tab.url);
+    const r = await fetch(base + '/annotations?url=' + encodeURIComponent(url));
     const anns = r.ok ? await r.json() : [];
     $('page').textContent = anns.length;
   } catch { $('page').textContent = '–'; }

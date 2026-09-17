@@ -15,6 +15,14 @@
   background: linear-gradient(transparent 55%, rgba(255, 120, 120, 0.5) 55%);
   border-bottom-color: rgba(230, 60, 60, 0.8);
 }
+.annotated-hit[data-stance="agree"] {
+  background: linear-gradient(transparent 55%, rgba(120, 200, 140, 0.5) 55%);
+  border-bottom-color: rgba(46, 158, 91, 0.8);
+}
+.annotated-hit[data-stance="context"] {
+  background: linear-gradient(transparent 55%, rgba(120, 170, 230, 0.5) 55%);
+  border-bottom-color: rgba(47, 127, 208, 0.8);
+}
 .annotated-hit[data-count]::after {
   content: attr(data-count);
   display: inline-block;
