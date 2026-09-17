@@ -3,11 +3,12 @@
 Highlight any sentence on the web, dispute it, follow sharp readers,
 watch the trending disputes. SQLite-backed, Render-ready.
 """
+import hmac
 import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 from fastapi import FastAPI, HTTPException, Query
@@ -20,12 +21,16 @@ import clips
 DB_PATH = os.environ.get("ANNOTATED_DB", os.path.join(os.path.dirname(__file__), "annotated.db"))
 VALID_STANCES = {"dispute", "agree", "context"}
 HANDLE_RE = re.compile(r"^[a-zA-Z0-9_.-]{2,32}$")
+# Handles nobody may claim (case-insensitive; clean_handle lowercases first).
+RESERVED_HANDLES = {"admin", "administrator", "support", "annotated", "system", "moderator"}
 
 app = FastAPI(title="Annotated API", version="0.1.0")
 
 
 def db():
     con = sqlite3.connect(DB_PATH)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
     con.row_factory = sqlite3.Row
     return con
 
@@ -116,6 +121,10 @@ def init_db():
             con.execute(f"ALTER TABLE profiles ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+    try:
+        con.execute("ALTER TABLE clips ADD COLUMN hidden INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     con.commit()
     con.close()
 
@@ -124,6 +133,8 @@ init_db()
 
 # shared connection for the auth/clips routers (they run background threads)
 _shared = sqlite3.connect(DB_PATH, check_same_thread=False)
+_shared.execute("PRAGMA journal_mode=WAL")
+_shared.execute("PRAGMA busy_timeout=5000")
 auth.init(_shared)
 clips.init(_shared)
 app.include_router(auth.router)
@@ -138,7 +149,19 @@ def clean_handle(h: str) -> str:
     h = (h or "").strip().lower()
     if not HANDLE_RE.match(h):
         raise HTTPException(400, "handle must be 2-32 chars: letters, numbers, _ . -")
+    if h in RESERVED_HANDLES:
+        raise HTTPException(400, "that handle is reserved")
     return h
+
+
+def rate_limited(con: sqlite3.Connection, table: str, handle: str, max_per_hour: int) -> bool:
+    """True when handle already has max_per_hour rows in table within the last hour."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    n = con.execute(
+        f"SELECT COUNT(*) c FROM {table} WHERE handle=? AND created_at >= ?",
+        (handle, cutoff),
+    ).fetchone()["c"]
+    return n >= max_per_hour
 
 
 # ---------- models ----------
@@ -162,6 +185,25 @@ class ReplyIn(BaseModel):
     text: str
 
 
+class HideIn(BaseModel):
+    admin_token: str = ""
+
+
+@app.post("/admin/clips/{clip_id}/hide")
+def hide_clip(clip_id: str, h: HideIn):
+    """Hide a clip from the public feed (e.g. failed production clips)."""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if not expected or not hmac.compare_digest(h.admin_token, expected):
+        raise HTTPException(403, "forbidden")
+    con = db()
+    cur = con.execute("UPDATE clips SET hidden=1 WHERE id=?", (clip_id,))
+    con.commit()
+    con.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "unknown clip")
+    return {"ok": True}
+
+
 # ---------- routes ----------
 @app.get("/health")
 def health():
@@ -175,6 +217,9 @@ def post_annotation(a: AnnotationIn):
         raise HTTPException(400, f"stance must be one of {sorted(VALID_STANCES)}")
     handle = clean_handle(a.handle)
     con = db()
+    if rate_limited(con, "annotations", handle, 30):
+        con.close()
+        return JSONResponse({"error": "rate limit exceeded"}, status_code=429)
     con.execute("INSERT OR IGNORE INTO profiles (handle, created_at) VALUES (?, ?)", (handle, now_iso()))
     cur = con.execute(
         "INSERT INTO annotations (url, quote, prefix, suffix, stance, comment, handle, created_at)"
@@ -353,7 +398,8 @@ def api_feed(limit: int = Query(default=50, le=200)):
     ).fetchall()
     clps = con.execute(
         "SELECT 'clip' kind, id, source_url url, source_type, status, handle, comment,"
-        " created_at FROM clips ORDER BY created_at DESC LIMIT ?",
+        " created_at FROM clips WHERE status='ready' AND COALESCE(hidden,0)=0"
+        " ORDER BY created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
     con.close()
