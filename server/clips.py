@@ -47,6 +47,41 @@ def _run(cmd, timeout=600):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _cobalt_fetch(source_url: str, tmpdir: str):
+    """Resolve a direct media URL via the cobalt API and fetch it.
+
+    Returns (local_path, error). Empty error means success.
+    """
+    import json as _json
+    import urllib.request
+    api = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools/")
+    try:
+        req = urllib.request.Request(
+            api,
+            data=_json.dumps({
+                "url": source_url,
+                "videoQuality": "480",
+                "youtubeVideoCodec": "h264",
+                "downloadMode": "auto",
+            }).encode(),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = _json.load(resp)
+    except Exception as e:
+        return None, f"cobalt api unreachable: {str(e)[:120]}"
+    if data.get("status") not in ("tunnel", "redirect", "local-processing"):
+        return None, f"cobalt {data.get('status')}: {str(data.get('error') or data.get('text'))[:120]}"
+    media_url = data.get("url")
+    if not media_url or not media_url.startswith("https://"):
+        return None, "cobalt: no media url"
+    out = os.path.join(tmpdir, "src.mp4")
+    r = _run(["curl", "-sL", "--max-time", 300, "-o", out, media_url], timeout=330)
+    if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1024:
+        return None, "cobalt: media fetch failed"
+    return out, ""
+
+
 def _process_clip(clip_id: str):
     with _lock:
         row = db.execute(
@@ -69,10 +104,10 @@ def _process_clip(clip_id: str):
             tmp = tempfile.mkdtemp()
             try:
                 section = f"*{_ts(start)}-{_ts(end)}"
-                # Cycle player clients: YouTube bot-walls datacenter IPs on the
-                # default web client; the android client usually sails through.
+                # Strategy 1: yt-dlp, cycling player clients (YouTube bot-walls
+                # datacenter IPs on the default web client).
                 dl_ok, dl_err = False, ""
-                for client in ("android", "default,-web", "default"):
+                for client in ("android", "web_embedded", "tv", "default,-web", "default"):
                     r = _run([
                         "yt-dlp", "--download-sections", section,
                         "--extractor-args", f"youtube:player_client={client}",
@@ -85,15 +120,17 @@ def _process_clip(clip_id: str):
                         dl_ok = True
                         break
                     dl_err = (r.stderr or r.stdout)[-300:]
-                if not dl_ok:
-                    return fail("download failed: " + dl_err)
                 src = None
-                for f in os.listdir(tmp):
-                    if f.startswith("src."):
-                        src = os.path.join(tmp, f)
-                        break
+                if dl_ok:
+                    for f in os.listdir(tmp):
+                        if f.startswith("src."):
+                            src = os.path.join(tmp, f)
+                            break
+                # Strategy 2: cobalt API fallback (resolves a direct file URL).
                 if not src:
-                    return fail("download produced no file")
+                    src, cobalt_err = _cobalt_fetch(source_url, tmp)
+                    if not src:
+                        return fail("download failed: " + (dl_err or "")[-200:] + " | " + cobalt_err)
                 out = os.path.join(CLIP_DIR, f"{clip_id}.mp4")
                 r = _run([
                     "ffmpeg", "-y", "-i", src,

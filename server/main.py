@@ -152,7 +152,7 @@ class FollowIn(BaseModel):
 # ---------- routes ----------
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "annotated-api"}
+    return {"ok": True, "service": "annotated-api", "version": "0.2.2"}
 
 
 @app.post("/annotations", status_code=201)
