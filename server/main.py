@@ -684,6 +684,7 @@ def homepage():
         "<title>Annotated — dispute it, clip it, prove it</title>"
         f"<style>{SITE_CSS}</style></head><body>"
         "<div class='hero'><h1>⚑ <span class='y'>Annotated</span></h1>"
+        "<p style='font-size:22px;color:#ffd640;font-weight:700;margin:0'>Dispute it. Clip it. Prove it — with receipts.</p>"
         "<p>Comment sections are sewers. Quotes get ripped out of context and nobody can tell what's true. "
         "Annotate any sentence on the web, clip any video moment, and settle it with receipts.</p>"
         "<a class='cta' href='https://github.com/sentientbias/annotated'>Get the Chrome extension</a>"
