@@ -29,6 +29,7 @@
         <div class="ann">
           <button class="follow" data-h="${esc(a.handle)}">${a.handle === me ? 'you' : '+ follow'}</button>
           <span class="badge b-${a.stance}">${esc(a.stance).toUpperCase()}</span>
+          ${a.tag ? `<span class="badge b-tag">🏷 ${esc(a.tag.replace('_', ' '))}</span>` : ''}
           <span class="who">${esc(a.handle)}</span><span class="when">${new Date(a.created_at).toLocaleString()}</span>
           <div>${esc(a.comment)}</div>
         </div>`).join('');

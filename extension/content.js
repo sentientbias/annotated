@@ -63,6 +63,10 @@
     .stance.sel-dispute { border-color: #e63c3c; background: #fdeeee; }
     .stance.sel-agree { border-color: #2e9e5b; background: #e9f7ef; }
     .stance.sel-context { border-color: #2f7fd0; background: #eaf2fd; }
+    .tags { display: flex; gap: 6px; margin: 0 0 10px; flex-wrap: wrap; }
+    .tag { font-size: 11px; border: 1px solid #ddd; border-radius: 999px; padding: 4px 10px;
+      cursor: pointer; color: #555; background: #fff; }
+    .tag.sel { border-color: #111; background: #111; color: #fff; }
     textarea { width: 100%; box-sizing: border-box; min-height: 90px; border: 2px solid #ddd;
       border-radius: 10px; padding: 10px; font: 14px/1.5 system-ui, sans-serif; resize: vertical; }
     input.handle { width: 100%; box-sizing: border-box; border: 2px solid #ddd; border-radius: 10px;
@@ -144,6 +148,12 @@
           <div class="stance" data-s="agree">✓ Agree</div>
           <div class="stance" data-s="context">◈ Context</div>
         </div>
+        <div class="tags">
+          <div class="tag" data-t="fact_check">🏷 fact check</div>
+          <div class="tag" data-t="steel_man">🏷 steel-man</div>
+          <div class="tag" data-t="receipt">🏷 receipt</div>
+          <div class="tag" data-t="hot_take">🏷 hot take</div>
+        </div>
         <textarea placeholder="Why? Add your receipt — link, quote, or reasoning…"></textarea>
         <input class="handle" placeholder="your handle (e.g. anon42)" maxlength="32" />
         <div class="meta">Posted publicly. Be sharp, cite sources, no doxxing.</div>
@@ -154,7 +164,14 @@
       </div>`;
     shadow.appendChild(ov);
     let stance = null;
+    let tag = '';
     const stances = [...ov.querySelectorAll('.stance')];
+    const tags = [...ov.querySelectorAll('.tag')];
+    tags.forEach(el => el.addEventListener('click', () => {
+      // Single-select toggle: click again to clear.
+      tag = (tag === el.dataset.t) ? '' : el.dataset.t;
+      tags.forEach(x => x.classList.toggle('sel', x.dataset.t === tag));
+    }));
     const postBtn = ov.querySelector('.btn-post');
     const ta = ov.querySelector('textarea');
     const hi = ov.querySelector('.handle');
@@ -177,7 +194,7 @@
         const res = await postJson(base + '/annotations', {
           url: normUrl(location.href), quote: ctx.text,
           prefix: ctx.prefix, suffix: ctx.suffix,
-          stance, comment: ta.value.trim(), handle: h,
+          stance, tag, comment: ta.value.trim(), handle: h,
         });
         if (!res.ok) throw new Error('server ' + res.status);
         ov.remove(); toast('Annotation posted ⚑');

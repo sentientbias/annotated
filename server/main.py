@@ -20,6 +20,8 @@ import clips
 
 DB_PATH = os.environ.get("ANNOTATED_DB", os.path.join(os.path.dirname(__file__), "annotated.db"))
 VALID_STANCES = {"dispute", "agree", "context"}
+# Optional discourse tags (borrowed from the best-reviewed competitor's taxonomy).
+VALID_TAGS = {"fact_check", "steel_man", "receipt", "hot_take"}
 HANDLE_RE = re.compile(r"^[a-zA-Z0-9_.-]{2,32}$")
 # Handles nobody may claim (case-insensitive; clean_handle lowercases first).
 RESERVED_HANDLES = {"admin", "administrator", "support", "annotated", "system", "moderator"}
@@ -122,6 +124,10 @@ def init_db():
         except sqlite3.OperationalError:
             pass
     try:
+        con.execute("ALTER TABLE annotations ADD COLUMN tag TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
         con.execute("ALTER TABLE clips ADD COLUMN hidden INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
@@ -173,6 +179,7 @@ class AnnotationIn(BaseModel):
     stance: str
     comment: str = Field(min_length=1, max_length=2000)
     handle: str = Field(min_length=2, max_length=32)
+    tag: str = Field(default="", max_length=16)  # optional discourse tag
 
 
 class FollowIn(BaseModel):
@@ -215,6 +222,9 @@ def post_annotation(a: AnnotationIn):
     stance = a.stance.strip().lower()
     if stance not in VALID_STANCES:
         raise HTTPException(400, f"stance must be one of {sorted(VALID_STANCES)}")
+    tag = a.tag.strip().lower()
+    if tag and tag not in VALID_TAGS:
+        raise HTTPException(400, f"tag must be one of {sorted(VALID_TAGS)}")
     handle = clean_handle(a.handle)
     con = db()
     if rate_limited(con, "annotations", handle, 30):
@@ -222,9 +232,9 @@ def post_annotation(a: AnnotationIn):
         return JSONResponse({"error": "rate limit exceeded"}, status_code=429)
     con.execute("INSERT OR IGNORE INTO profiles (handle, created_at) VALUES (?, ?)", (handle, now_iso()))
     cur = con.execute(
-        "INSERT INTO annotations (url, quote, prefix, suffix, stance, comment, handle, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (a.url.strip(), a.quote.strip(), a.prefix, a.suffix, stance, a.comment.strip(), handle, now_iso()),
+        "INSERT INTO annotations (url, quote, prefix, suffix, stance, tag, comment, handle, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (a.url.strip(), a.quote.strip(), a.prefix, a.suffix, stance, tag, a.comment.strip(), handle, now_iso()),
     )
     con.commit()
     new_id = cur.lastrowid
@@ -236,7 +246,7 @@ def post_annotation(a: AnnotationIn):
 def get_annotations(url: str = Query(min_length=1, max_length=2000)):
     con = db()
     rows = con.execute(
-        "SELECT id, url, quote, prefix, suffix, stance, comment, handle, created_at"
+        "SELECT id, url, quote, prefix, suffix, stance, tag, comment, handle, created_at"
         " FROM annotations WHERE url = ? ORDER BY created_at DESC LIMIT 500",
         (url,),
     ).fetchall()
@@ -392,7 +402,7 @@ def api_feed(limit: int = Query(default=50, le=200)):
     """Newest annotations + clips, one combined public feed."""
     con = db()
     anns = con.execute(
-        "SELECT 'annotation' kind, id, quote, stance, comment, handle, url, created_at"
+        "SELECT 'annotation' kind, id, quote, stance, tag, comment, handle, url, created_at"
         " FROM annotations ORDER BY created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
@@ -427,8 +437,9 @@ def feed_page():
                 f"<a href='{escape(it['url'])}'>source</a></div></div>"
             )
         else:
+            tag_badge = f" · 🏷 {escape(it['tag'].replace('_', ' '))}" if it.get("tag") else ""
             cards += (
-                f"<div class='t'><div class='k'>⚑ {escape(it['stance'])}</div>"
+                f"<div class='t'><div class='k'>⚑ {escape(it['stance'])}{tag_badge}</div>"
                 f"<div class='q'>&ldquo;{escape(it['quote'][:220])}&rdquo;</div>"
                 f"<div class='m'>@{escape(it['handle'])} · {escape(it.get('comment','')[:120])} · "
                 f"<a href='{escape(it['url'])}'>{escape(it['url'][:60])}</a></div></div>"
