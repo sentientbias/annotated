@@ -80,6 +80,14 @@ def init_db():
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_cc_clip ON clip_comments(clip_id);
+        CREATE TABLE IF NOT EXISTS annotation_replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            annotation_id INTEGER NOT NULL,
+            handle TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ar_ann ON annotation_replies(annotation_id);
         CREATE TABLE IF NOT EXISTS oauth_states (
             state TEXT PRIMARY KEY,
             verifier TEXT DEFAULT '',
@@ -149,6 +157,11 @@ class FollowIn(BaseModel):
     followee: str
 
 
+class ReplyIn(BaseModel):
+    handle: str
+    text: str
+
+
 # ---------- routes ----------
 @app.get("/health")
 def health():
@@ -182,8 +195,48 @@ def get_annotations(url: str = Query(min_length=1, max_length=2000)):
         " FROM annotations WHERE url = ? ORDER BY created_at DESC LIMIT 500",
         (url,),
     ).fetchall()
+    ids = [r["id"] for r in rows]
+    replies = {}
+    if ids:
+        for rr in con.execute(
+            "SELECT annotation_id, handle, text, created_at FROM annotation_replies"
+            f" WHERE annotation_id IN ({','.join('?' * len(ids))})"
+            " ORDER BY created_at",
+            ids,
+        ).fetchall():
+            replies.setdefault(rr["annotation_id"], []).append(
+                {"handle": rr["handle"], "text": rr["text"], "created_at": rr["created_at"]}
+            )
     con.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["replies"] = replies.get(r["id"], [])
+        out.append(d)
+    return out
+
+
+@app.post("/annotations/{annotation_id}/replies", status_code=201)
+def post_reply(annotation_id: int, r: ReplyIn):
+    handle = clean_handle(r.handle)
+    text = (r.text or "").strip()[:2000]
+    if not text:
+        raise HTTPException(400, "text required (1-2000 chars)")
+    con = db()
+    exists = con.execute("SELECT 1 FROM annotations WHERE id = ?", (annotation_id,)).fetchone()
+    if not exists:
+        con.close()
+        raise HTTPException(404, "annotation not found")
+    con.execute("INSERT OR IGNORE INTO profiles (handle, created_at) VALUES (?, ?)", (handle, now_iso()))
+    cur = con.execute(
+        "INSERT INTO annotation_replies (annotation_id, handle, text, created_at)"
+        " VALUES (?, ?, ?, ?)",
+        (annotation_id, handle, text, now_iso()),
+    )
+    con.commit()
+    new_id = cur.lastrowid
+    con.close()
+    return {"ok": True, "id": new_id}
 
 
 @app.post("/follow")
@@ -199,6 +252,17 @@ def follow(f: FollowIn):
         "INSERT OR IGNORE INTO follows (follower, followee, created_at) VALUES (?, ?, ?)",
         (follower, followee, now_iso()),
     )
+    con.commit()
+    con.close()
+    return {"ok": True, "follower": follower, "followee": followee}
+
+
+@app.post("/unfollow")
+def unfollow(f: FollowIn):
+    follower = clean_handle(f.follower)
+    followee = clean_handle(f.followee)
+    con = db()
+    con.execute("DELETE FROM follows WHERE follower = ? AND followee = ?", (follower, followee))
     con.commit()
     con.close()
     return {"ok": True, "follower": follower, "followee": followee}
@@ -220,6 +284,18 @@ def profile(handle: str):
         " ORDER BY created_at DESC LIMIT 20",
         (handle,),
     ).fetchall()
+    followers_list = [
+        r["follower"]
+        for r in con.execute(
+            "SELECT follower FROM follows WHERE followee = ? ORDER BY follower LIMIT 100", (handle,)
+        ).fetchall()
+    ]
+    following_list = [
+        r["followee"]
+        for r in con.execute(
+            "SELECT followee FROM follows WHERE follower = ? ORDER BY followee LIMIT 100", (handle,)
+        ).fetchall()
+    ]
     con.close()
     return {
         "handle": handle,
@@ -227,6 +303,8 @@ def profile(handle: str):
         "annotation_count": count,
         "followers": followers,
         "following": following,
+        "followers_list": followers_list,
+        "following_list": following_list,
         "recent": [dict(r) for r in recent],
     }
 
