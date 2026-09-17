@@ -205,6 +205,13 @@ def _public_url_ok(url: str) -> str:
 
 def _fetch_title(url: str) -> tuple[str, str]:
     """Fetch a page title for a receipt link. Returns (title, domain). Never raises."""
+    def clean(t: str, domain: str) -> str:
+        t = re.sub(r"\s+", " ", t or "").strip()[:200]
+        # junk titles: empty, bare domain, or "domain.com" style bot walls
+        if not t or t.lower().rstrip("/") in (domain.lower(), "http://" + domain.lower(), "https://" + domain.lower()):
+            return ""
+        return t
+
     try:
         domain = urllib.parse.urlparse(url).hostname or ""
         req = urllib.request.Request(
@@ -216,13 +223,29 @@ def _fetch_title(url: str) -> tuple[str, str]:
                 return "", domain
             raw = r.read(1_000_000).decode("utf-8", "replace")
         m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.I | re.S)
-        title = re.sub(r"\s+", " ", m.group(1)).strip()[:200] if m else ""
+        title = clean(m.group(1), domain) if m else ""
+        if not title:
+            og = re.search(
+                r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']',
+                raw, re.I | re.S,
+            ) or re.search(
+                r'<meta[^>]+content=["\'](.*?)["\'][^>]+property=["\']og:title["\']',
+                raw, re.I | re.S,
+            )
+            if og:
+                title = clean(html_unescape(og.group(1)), domain)
         return title, domain
     except Exception:
         try:
             return "", urllib.parse.urlparse(url).hostname or ""
         except Exception:
             return "", ""
+
+
+def html_unescape(s: str) -> str:
+    import html as _html
+
+    return _html.unescape(s)
 
 
 def _unfurl_worker(annotation_id: int, urls: list[str]):
@@ -328,6 +351,11 @@ class HideIn(BaseModel):
     admin_token: str = ""
 
 
+class ReunfurlIn(BaseModel):
+    admin_token: str = ""
+    add_urls: list[str] = Field(default_factory=list, max_length=5)
+
+
 @app.post("/admin/clips/{clip_id}/hide")
 def hide_clip(clip_id: str, h: HideIn):
     """Hide a clip from the public feed (e.g. failed production clips)."""
@@ -341,6 +369,41 @@ def hide_clip(clip_id: str, h: HideIn):
     if cur.rowcount == 0:
         raise HTTPException(404, "unknown clip")
     return {"ok": True}
+
+
+@app.post("/admin/annotations/{annotation_id}/reunfurl")
+def reunfurl(annotation_id: int, h: ReunfurlIn):
+    """Admin: re-fetch receipt titles for an annotation; optionally attach new receipt URLs."""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if not expected or not hmac.compare_digest(h.admin_token, expected):
+        raise HTTPException(403, "forbidden")
+    con = db()
+    exists = con.execute("SELECT 1 FROM annotations WHERE id=?", (annotation_id,)).fetchone()
+    if not exists:
+        con.close()
+        raise HTTPException(404, "annotation not found")
+    urls = [r["url"] for r in con.execute(
+        "SELECT url FROM annotation_sources WHERE annotation_id=?", (annotation_id,)
+    ).fetchall()]
+    for u in (h.add_urls or [])[:5]:
+        u = (u or "").strip()
+        if not u:
+            continue
+        try:
+            _public_url_ok(u)
+        except ValueError:
+            continue
+        domain = urllib.parse.urlparse(u).hostname or ""
+        con.execute(
+            "INSERT INTO annotation_sources (annotation_id, url, title, domain, created_at)"
+            " VALUES (?, ?, '', ?, ?)",
+            (annotation_id, u, domain, now_iso()),
+        )
+        urls.append(u)
+    con.commit()
+    con.close()
+    _unfurl_worker(annotation_id, urls)  # synchronous: admin use, few URLs
+    return {"ok": True, "unfurled": len(urls)}
 
 
 # ---------- routes ----------
