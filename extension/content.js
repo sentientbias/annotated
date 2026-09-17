@@ -156,7 +156,7 @@
         </div>
         <textarea placeholder="Why? Add your receipt — link, quote, or reasoning…"></textarea>
         <input id="ac-receipt" class="handle" placeholder="🔗 Receipt link (optional) — paste a source URL" maxlength="2000" />
-        <input class="handle" placeholder="your handle (e.g. anon42)" maxlength="32" />
+        <input id="ac-handle" class="handle" placeholder="your handle (e.g. anon42)" maxlength="32" />
         <div class="meta">Posted publicly. Be sharp, cite sources, no doxxing.</div>
         <div class="row">
           <button class="btn btn-cancel">Cancel</button>
@@ -175,7 +175,7 @@
     }));
     const postBtn = ov.querySelector('.btn-post');
     const ta = ov.querySelector('textarea');
-    const hi = ov.querySelector('.handle');
+    const hi = ov.querySelector('#ac-handle');
     const ri = ov.querySelector('#ac-receipt');
     stances.forEach(el => el.addEventListener('click', () => {
       stances.forEach(x => x.className = 'stance');
