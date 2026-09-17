@@ -21,6 +21,20 @@
   /* ---------- quote mode: annotations on a sentence ---------- */
   async function renderQuote(ctx) {
     $('quote').textContent = '“' + ctx.quote + '”';
+    // consensus meter for the whole page
+    try {
+      const cr = await fetch(base + '/api/consensus?url=' + encodeURIComponent(ctx.url));
+      if (cr.ok) {
+        const cc = await cr.json();
+        const tot = cc.total || 1;
+        const seg = (n, c) => `<span style="display:inline-block;height:100%;width:${(100 * n / tot).toFixed(1)}%;background:${c}"></span>`;
+        $('quote').insertAdjacentHTML('afterend',
+          `<div id="meter" style="margin:-6px 0 12px;font-size:12px;color:#666">` +
+          `<span style="display:inline-block;width:110px;height:8px;border-radius:99px;overflow:hidden;background:#eee;vertical-align:middle">` +
+          seg(cc.dispute, '#e63c3c') + seg(cc.agree, '#2e9e5b') + seg(cc.context, '#2f7fd0') +
+          `</span><span style="margin-left:6px">⚑${cc.dispute} ✓${cc.agree} ◈${cc.context} on this page</span></div>`);
+      }
+    } catch (e) { /* meter is decorative; never block the thread */ }
     try {
       const r = await fetch(base + '/annotations?url=' + encodeURIComponent(ctx.url));
       const anns = (r.ok ? await r.json() : []).filter(a => a.quote === ctx.quote);
@@ -32,6 +46,9 @@
           ${a.tag ? `<span class="badge b-tag">🏷 ${esc(a.tag.replace('_', ' '))}</span>` : ''}
           <span class="who">${esc(a.handle)}</span><span class="when">${new Date(a.created_at).toLocaleString()}</span>
           <div>${esc(a.comment)}</div>
+          ${(a.sources || []).map(s => `
+            <a class="receipt" href="${esc(s.url)}" target="_blank" rel="noopener">🧾 ${esc(s.title || s.url)}
+            <span class="d">${esc(s.domain || '')}</span></a>`).join('')}
         </div>`).join('');
       document.querySelectorAll('.follow').forEach(b => b.addEventListener('click', async () => {
         const target = b.dataset.h;

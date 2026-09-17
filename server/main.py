@@ -4,10 +4,14 @@ Highlight any sentence on the web, dispute it, follow sharp readers,
 watch the trending disputes. SQLite-backed, Render-ready.
 """
 import hmac
+import ipaddress
 import os
 import re
+import socket
 import sqlite3
 import threading
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from html import escape
 
@@ -116,6 +120,15 @@ def init_db():
             contact TEXT DEFAULT '',
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS annotation_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            annotation_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            domain TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_as_ann ON annotation_sources(annotation_id);
         """
     )
     for col in ("x_id", "google_id", "display_name"):
@@ -170,6 +183,124 @@ def rate_limited(con: sqlite3.Connection, table: str, handle: str, max_per_hour:
     return n >= max_per_hour
 
 
+# ---------- receipts: source-link unfurling (SSRF-guarded) ----------
+def _public_url_ok(url: str) -> str:
+    """Validate a receipt URL: http(s), public IP only. Returns normalized URL."""
+    u = (url or "").strip()
+    if len(u) > 2000:
+        raise ValueError("url too long")
+    p = urllib.parse.urlparse(u)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise ValueError("only http(s) urls")
+    try:
+        infos = socket.getaddrinfo(p.hostname, None)
+    except socket.gaierror:
+        raise ValueError("unresolvable host")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise ValueError("non-public host")
+    return u
+
+
+def _fetch_title(url: str) -> tuple[str, str]:
+    """Fetch a page title for a receipt link. Returns (title, domain). Never raises."""
+    try:
+        domain = urllib.parse.urlparse(url).hostname or ""
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "AnnotatedBot/0.4 (receipt preview)"}
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            ctype = r.headers.get("Content-Type", "")
+            if "html" not in ctype:
+                return "", domain
+            raw = r.read(1_000_000).decode("utf-8", "replace")
+        m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.I | re.S)
+        title = re.sub(r"\s+", " ", m.group(1)).strip()[:200] if m else ""
+        return title, domain
+    except Exception:
+        try:
+            return "", urllib.parse.urlparse(url).hostname or ""
+        except Exception:
+            return "", ""
+
+
+def _unfurl_worker(annotation_id: int, urls: list[str]):
+    """Background thread: resolve receipt titles without blocking the POST."""
+    con = sqlite3.connect(DB_PATH)
+    con.execute("PRAGMA busy_timeout=5000")
+    try:
+        for u in urls:
+            try:
+                _public_url_ok(u)
+            except ValueError:
+                continue
+            title, domain = _fetch_title(u)
+            con.execute(
+                "UPDATE annotation_sources SET title=?, domain=? WHERE annotation_id=? AND url=?",
+                (title, domain, annotation_id, u),
+            )
+            con.commit()
+    finally:
+        con.close()
+
+
+def get_sources(con: sqlite3.Connection, annotation_ids: list[int]) -> dict[int, list[dict]]:
+    """Map annotation_id -> list of receipt dicts."""
+    out: dict[int, list[dict]] = {}
+    if not annotation_ids:
+        return out
+    for r in con.execute(
+        "SELECT annotation_id, url, title, domain FROM annotation_sources"
+        f" WHERE annotation_id IN ({','.join('?' * len(annotation_ids))}) ORDER BY id",
+        annotation_ids,
+    ).fetchall():
+        out.setdefault(r["annotation_id"], []).append(
+            {"url": r["url"], "title": r["title"], "domain": r["domain"]}
+        )
+    return out
+
+
+# ---------- shared UI helpers ----------
+STANCE_COLORS = {"dispute": "#e63c3c", "agree": "#2e9e5b", "context": "#2f7fd0"}
+
+
+def consensus_counts(con: sqlite3.Connection, url: str) -> dict:
+    row = con.execute(
+        "SELECT stance, COUNT(*) c FROM annotations WHERE url=? GROUP BY stance", (url,)
+    ).fetchall()
+    counts = {"dispute": 0, "agree": 0, "context": 0}
+    for r in row:
+        if r["stance"] in counts:
+            counts[r["stance"]] = r["c"]
+    counts["total"] = counts["dispute"] + counts["agree"] + counts["context"]
+    return counts
+
+
+def meter_html(counts: dict, small: bool = False) -> str:
+    """Three-color consensus bar. counts has dispute/agree/context/total keys."""
+    total = counts.get("total", 0) or 1
+    segs = "".join(
+        f"<span style='display:inline-block;height:100%;width:{100*counts[s]/total:.1f}%;"
+        f"background:{STANCE_COLORS[s]}' title='{s}: {counts[s]}'></span>"
+        for s in ("dispute", "agree", "context")
+    )
+    h = "6px" if small else "8px"
+    label = (
+        f"<span style='font-size:11px;color:#666;margin-left:6px'>"
+        f"⚑{counts['dispute']} ✓{counts['agree']} ◈{counts['context']}</span>"
+    )
+    return (
+        f"<span style='display:inline-block;width:110px;height:{h};border-radius:99px;"
+        f"overflow:hidden;background:#eee;vertical-align:middle'>{segs}</span>{label}"
+    )
+
+
+def x_share_url(text: str, page_url: str) -> str:
+    q = urllib.parse.quote
+    return f"https://x.com/intent/tweet?text={q(text[:240])}&url={q(page_url)}"
+
+
 # ---------- models ----------
 class AnnotationIn(BaseModel):
     url: str = Field(min_length=1, max_length=2000)
@@ -180,6 +311,7 @@ class AnnotationIn(BaseModel):
     comment: str = Field(min_length=1, max_length=2000)
     handle: str = Field(min_length=2, max_length=32)
     tag: str = Field(default="", max_length=16)  # optional discourse tag
+    sources: list[str] = Field(default_factory=list, max_length=5)  # receipt links
 
 
 class FollowIn(BaseModel):
@@ -214,7 +346,7 @@ def hide_clip(clip_id: str, h: HideIn):
 # ---------- routes ----------
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "annotated-api", "version": "0.3.0"}
+    return {"ok": True, "service": "annotated-api", "version": "0.4.0"}
 
 
 @app.post("/annotations", status_code=201)
@@ -238,7 +370,28 @@ def post_annotation(a: AnnotationIn):
     )
     con.commit()
     new_id = cur.lastrowid
+    # receipt links: validate + store, unfurl titles in background
+    good_urls = []
+    for u in (a.sources or [])[:5]:
+        u = (u or "").strip()
+        if not u:
+            continue
+        try:
+            _public_url_ok(u)
+        except ValueError:
+            continue
+        good_urls.append(u)
+    for u in good_urls:
+        domain = urllib.parse.urlparse(u).hostname or ""
+        con.execute(
+            "INSERT INTO annotation_sources (annotation_id, url, title, domain, created_at)"
+            " VALUES (?, ?, '', ?, ?)",
+            (new_id, u, domain, now_iso()),
+        )
+    con.commit()
     con.close()
+    if good_urls:
+        threading.Thread(target=_unfurl_worker, args=(new_id, good_urls), daemon=True).start()
     return {"ok": True, "id": new_id}
 
 
@@ -262,11 +415,13 @@ def get_annotations(url: str = Query(min_length=1, max_length=2000)):
             replies.setdefault(rr["annotation_id"], []).append(
                 {"handle": rr["handle"], "text": rr["text"], "created_at": rr["created_at"]}
             )
+    smap = get_sources(con, ids)
     con.close()
     out = []
     for r in rows:
         d = dict(r)
         d["replies"] = replies.get(r["id"], [])
+        d["sources"] = smap.get(r["id"], [])
         out.append(d)
     return out
 
@@ -369,22 +524,25 @@ def trending():
     con = db()
     rows = con.execute(
         "SELECT quote, url, COUNT(*) c,"
-        " SUM(CASE WHEN stance='dispute' THEN 1 ELSE 0 END) disputes"
+        " SUM(CASE WHEN stance='dispute' THEN 1 ELSE 0 END) disputes,"
+        " SUM(CASE WHEN stance='agree' THEN 1 ELSE 0 END) agrees,"
+        " SUM(CASE WHEN stance='context' THEN 1 ELSE 0 END) contexts"
         " FROM annotations GROUP BY quote, url ORDER BY c DESC LIMIT 50"
     ).fetchall()
     con.close()
     items = "".join(
         f"<div class='t'><div class='q'>&ldquo;{escape(r['quote'][:220])}&rdquo;</div>"
-        f"<div class='m'>{r['c']} annotations · {r['disputes']} disputes · "
+        f"<div style='margin:6px 0'>{meter_html({'dispute': r['disputes'] or 0, 'agree': r['agrees'] or 0, 'context': r['contexts'] or 0, 'total': r['c']}, small=True)}</div>"
+        f"<div class='m'>{r['c']} annotations · "
         f"<a href='{escape(r['url'])}'>{escape(r['url'][:60])}</a></div></div>"
         for r in rows
     ) or "<p>No annotations yet. Be the first to dispute something.</p>"
     return HTMLResponse(
-        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Trending disputes — Annotated</title>"
-        "<style>body{font:15px/1.6 system-ui;max-width:720px;margin:0 auto;padding:24px;color:#111}"
-        "h1{font-size:22px}.t{border:1px solid #e5e5e5;border-radius:12px;padding:14px 16px;margin:12px 0}"
-        ".q{font-style:italic}.m{font-size:13px;color:#666;margin-top:6px}a{color:#2f7fd0}</style>"
-        "</head><body><h1>⚑ Trending disputes</h1>" + items + "</body></html>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Trending disputes — Annotated</title>"
+        f"<style>{SITE_CSS}</style></head><body><div class='wrap'>"
+        "<p><a href='/'>⚑ Annotated</a></p><h1>⚑ Trending disputes</h1>" + items + "</div></body></html>"
     )
 
 
@@ -395,6 +553,152 @@ def stats():
     n_users = con.execute("SELECT COUNT(*) c FROM profiles").fetchone()["c"]
     con.close()
     return {"annotations": n_ann, "handles": n_users}
+
+
+@app.get("/api/consensus")
+def api_consensus(url: str = Query(min_length=1, max_length=2000)):
+    """Stance counts for a URL — powers the consensus meter."""
+    con = db()
+    counts = consensus_counts(con, url)
+    con.close()
+    return {"url": url, **counts}
+
+
+SITE_CSS = """
+body{font:15px/1.6 system-ui,-apple-system,sans-serif;margin:0;color:#111;background:#fff}
+.wrap{max-width:760px;margin:0 auto;padding:24px}
+.hero{background:#111;color:#fff;padding:64px 24px;text-align:center}
+.hero h1{font-size:40px;margin:0 0 8px;letter-spacing:-1px}
+.hero h1 .y{color:#ffd640}
+.hero p{font-size:18px;color:#bbb;max-width:560px;margin:12px auto}
+.cta{display:inline-block;background:#ffd640;color:#111;font-weight:800;font-size:16px;
+  border-radius:12px;padding:14px 28px;margin:10px 6px 0;text-decoration:none}
+.cta.ghost{background:transparent;color:#ffd640;border:2px solid #ffd640}
+.steps{display:flex;gap:16px;margin:36px 0;flex-wrap:wrap}
+.step{flex:1;min-width:200px;border:1px solid #e5e5e5;border-radius:14px;padding:18px}
+.step .n{font-size:26px}
+.step h3{margin:8px 0 4px;font-size:16px}
+.step p{font-size:14px;color:#555;margin:0}
+.t{border:1px solid #e5e5e5;border-radius:12px;padding:14px 16px;margin:12px 0}
+.q{font-style:italic}
+.m{font-size:13px;color:#666;margin-top:6px}
+.k{font-size:12px;color:#999;text-transform:uppercase}
+a{color:#2f7fd0}
+.share{display:inline-block;margin-top:8px;font-size:13px;font-weight:700;color:#111;
+  background:#ffd640;border-radius:8px;padding:6px 12px;text-decoration:none}
+.receipt{display:block;border:1px solid #e5e5e5;border-radius:8px;padding:8px 10px;
+  margin:6px 0;font-size:13px;text-decoration:none;color:#111;background:#fafafa}
+.receipt:hover{background:#f0f0f0}
+.receipt .d{color:#888;font-size:12px}
+footer{border-top:1px solid #eee;margin-top:48px;padding:24px;text-align:center;
+  font-size:13px;color:#888}
+h2.sec{font-size:22px;margin:40px 0 4px}
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def homepage():
+    con = db()
+    n_ann = con.execute("SELECT COUNT(*) c FROM annotations").fetchone()["c"]
+    n_clips = con.execute(
+        "SELECT COUNT(*) c FROM clips WHERE status='ready' AND COALESCE(hidden,0)=0"
+    ).fetchone()["c"]
+    n_users = con.execute("SELECT COUNT(*) c FROM profiles").fetchone()["c"]
+    hot = con.execute(
+        "SELECT quote, url, COUNT(*) c FROM annotations GROUP BY quote, url"
+        " ORDER BY c DESC LIMIT 3"
+    ).fetchall()
+    con.close()
+    hot_html = "".join(
+        f"<div class='t'><div class='q'>&ldquo;{escape(r['quote'][:160])}&rdquo;</div>"
+        f"<div class='m'>{r['c']} annotations · "
+        f"<a href='{escape(r['url'])}'>{escape(r['url'][:50])}</a></div></div>"
+        for r in hot
+    ) or "<p style='color:#888'>No disputes yet — install the extension and fire the first shot.</p>"
+    return HTMLResponse(
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Annotated — dispute it, clip it, prove it</title>"
+        f"<style>{SITE_CSS}</style></head><body>"
+        "<div class='hero'><h1>⚑ <span class='y'>Annotated</span></h1>"
+        "<p>Comment sections are sewers. Quotes get ripped out of context and nobody can tell what's true. "
+        "Annotate any sentence on the web, clip any video moment, and settle it with receipts.</p>"
+        "<a class='cta' href='https://github.com/sentientbias/annotated'>Get the Chrome extension</a>"
+        "<a class='cta ghost' href='/feed'>Browse the public feed</a>"
+        f"<p style='font-size:14px;margin-top:18px'>{n_ann} annotations · {n_clips} clips · {n_users} handles</p></div>"
+        "<div class='wrap'>"
+        "<div class='steps'>"
+        "<div class='step'><div class='n'>⚑</div><h3>Dispute any sentence</h3>"
+        "<p>Select text on any article. Pick a stance — dispute, agree, context — tag the discourse, post.</p></div>"
+        "<div class='step'><div class='n'>🎬</div><h3>Clip any moment</h3>"
+        "<p>Grab up to 90 seconds of any video. The thread opens with the source link and the player.</p></div>"
+        "<div class='step'><div class='n'>🧾</div><h3>Bring receipts</h3>"
+        "<p>Attach source links to every annotation. The crowd's stance meter shows who's winning.</p></div>"
+        "</div>"
+        "<h2 class='sec'>Hottest disputes right now</h2>" + hot_html +
+        "<h2 class='sec'>How it works</h2>"
+        "<p>1. Install the extension. 2. Select a sentence — or hit <b>⚑ Clip 90s</b> on any video. "
+        "3. Your annotation lands on a public permalink with a stance meter, receipts, and replies. "
+        "4. Share it to X and let the courtroom decide.</p>"
+        "<footer>Annotated — the internet's courtroom for quotes. "
+        "<a href='/feed'>Feed</a> · <a href='/trending'>Trending</a> · "
+        "<a href='https://github.com/sentientbias/annotated'>GitHub</a></footer>"
+        "</div></body></html>"
+    )
+
+
+@app.get("/a/{annotation_id}", response_class=HTMLResponse)
+def annotation_page(annotation_id: int):
+    """Public permalink for one annotation: quote, stance meter, receipts, replies, share."""
+    con = db()
+    r = con.execute(
+        "SELECT id, url, quote, stance, tag, comment, handle, created_at FROM annotations WHERE id=?",
+        (annotation_id,),
+    ).fetchone()
+    if not r:
+        con.close()
+        return HTMLResponse("<h2>Annotation not found</h2>", status_code=404)
+    counts = consensus_counts(con, r["url"])
+    smap = get_sources(con, [r["id"]])
+    replies = con.execute(
+        "SELECT handle, text, created_at FROM annotation_replies WHERE annotation_id=? ORDER BY created_at",
+        (r["id"],),
+    ).fetchall()
+    con.close()
+    base = os.environ.get("PUBLIC_BASE_URL", "https://annotated-api.onrender.com")
+    page_url = f"{base}/a/{r['id']}"
+    color = STANCE_COLORS.get(r["stance"], "#111")
+    tag_badge = f" · 🏷 {escape(r['tag'].replace('_', ' '))}" if r["tag"] else ""
+    srcs = smap.get(r["id"], [])
+    receipts = "".join(
+        f"<a class='receipt' href='{escape(s['url'])}' target=_blank rel=noopener>"
+        f"🧾 {escape(s['title'] or s['url'][:80])}<br><span class='d'>{escape(s['domain'])}</span></a>"
+        for s in srcs
+    )
+    replies_html = "".join(
+        f"<div class='t'><div class='m'><b>@{escape(x['handle'])}</b> · {escape(x['created_at'][:16].replace('T',' '))}</div>"
+        f"<div>{escape(x['text'])}</div></div>"
+        for x in replies
+    ) or "<p style='color:#888'>No replies yet.</p>"
+    share_text = f"I {r['stance']}d this on Annotated ⚑"
+    share = x_share_url(share_text, page_url)
+    return HTMLResponse(
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        f"<title>⚑ {escape(r['stance'])} — Annotated</title>"
+        f"<style>{SITE_CSS}</style></head><body><div class='wrap'>"
+        "<p><a href='/'>⚑ Annotated</a> · <a href='/feed'>Feed</a></p>"
+        f"<div class='t'><div class='k' style='color:{color};font-weight:800'>⚑ {escape(r['stance'].upper())}{tag_badge}</div>"
+        f"<div class='q' style='font-size:18px'>&ldquo;{escape(r['quote'])}&rdquo;</div>"
+        f"<div class='m'>on <a href='{escape(r['url'])}'>{escape(r['url'][:70])}</a></div>"
+        f"<div style='margin-top:10px'><b>Consensus</b><br>{meter_html(counts)}</div></div>"
+        f"<div class='t'><div class='m'><b>@{escape(r['handle'])}</b> · {escape(r['created_at'][:16].replace('T',' '))}</div>"
+        f"<p>{escape(r['comment'])}</p>"
+        + (f"<h4>🧾 Receipts ({len(srcs)})</h4>" + receipts if srcs else "") +
+        f"<a class='share' href='{share}' target=_blank rel=noopener>𝕏 Share this dispute</a></div>"
+        f"<h2 class='sec'>Replies ({len(replies)})</h2>" + replies_html +
+        "</div></body></html>"
+    )
 
 
 @app.get("/api/feed")
@@ -425,31 +729,69 @@ def api_feed(limit: int = Query(default=50, le=200)):
 @app.get("/feed", response_class=HTMLResponse)
 def feed_page():
     items = api_feed(limit=50)
+    base = os.environ.get("PUBLIC_BASE_URL", "https://annotated-api.onrender.com")
+    # stance counts per URL for the consensus meters (one query)
+    urls = list({it["url"] for it in items if it["kind"] == "annotation" and it.get("url")})
+    meters: dict[str, dict] = {}
+    if urls:
+        con = db()
+        for r in con.execute(
+            "SELECT url, stance, COUNT(*) c FROM annotations"
+            f" WHERE url IN ({','.join('?' * len(urls))}) GROUP BY url, stance",
+            urls,
+        ).fetchall():
+            m = meters.setdefault(r["url"], {"dispute": 0, "agree": 0, "context": 0, "total": 0})
+            if r["stance"] in m:
+                m[r["stance"]] = r["c"]
+                m["total"] += r["c"]
+        # receipt counts per annotation
+        ann_ids = [it["id"] for it in items if it["kind"] == "annotation"]
+        rcounts: dict[int, int] = {}
+        if ann_ids:
+            for r in con.execute(
+                "SELECT annotation_id, COUNT(*) c FROM annotation_sources"
+                f" WHERE annotation_id IN ({','.join('?' * len(ann_ids))}) GROUP BY annotation_id",
+                ann_ids,
+            ).fetchall():
+                rcounts[r["annotation_id"]] = r["c"]
+        con.close()
+    else:
+        rcounts = {}
     cards = ""
     for it in items:
         if it["kind"] == "clip":
             badge = "🎬 clip" if it.get("source_type") == "youtube" else "🎙 clip"
+            share = x_share_url(f"Watch this clip on Annotated 🎬", it["clip_url"])
             cards += (
                 f"<div class='t'><div class='k'>{badge} · {it.get('status')}</div>"
                 f"<div class='q'>{escape((it.get('comment') or '')[:220]) or '(no comment)'}</div>"
                 f"<div class='m'>@{escape(it['handle'])} · "
                 f"<a href='{it['clip_url']}'>open clip</a> · "
-                f"<a href='{escape(it['url'])}'>source</a></div></div>"
+                f"<a href='{escape(it['url'])}'>source</a> · "
+                f"<a href='{share}' target=_blank rel=noopener>𝕏 share</a></div></div>"
             )
         else:
             tag_badge = f" · 🏷 {escape(it['tag'].replace('_', ' '))}" if it.get("tag") else ""
+            m = meters.get(it["url"], {"dispute": 0, "agree": 0, "context": 0, "total": 0})
+            rc = rcounts.get(it["id"], 0)
+            rc_badge = f" · 🧾 {rc} receipt{'s' if rc != 1 else ''}" if rc else ""
+            page_url = f"{base}/a/{it['id']}"
+            share = x_share_url(f"I {it['stance']}d this on Annotated ⚑", page_url)
             cards += (
-                f"<div class='t'><div class='k'>⚑ {escape(it['stance'])}{tag_badge}</div>"
+                f"<div class='t'><div class='k'>⚑ {escape(it['stance'])}{tag_badge}{rc_badge}</div>"
                 f"<div class='q'>&ldquo;{escape(it['quote'][:220])}&rdquo;</div>"
+                f"<div style='margin:6px 0'>{meter_html(m, small=True)}</div>"
                 f"<div class='m'>@{escape(it['handle'])} · {escape(it.get('comment','')[:120])} · "
-                f"<a href='{escape(it['url'])}'>{escape(it['url'][:60])}</a></div></div>"
+                f"<a href='{escape(it['url'])}'>{escape(it['url'][:60])}</a><br>"
+                f"<a href='{page_url}'>permalink</a> · "
+                f"<a href='{share}' target=_blank rel=noopener>𝕏 share</a></div></div>"
             )
     cards = cards or "<p>Nothing yet. Clip a video or dispute a sentence.</p>"
     return HTMLResponse(
-        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Feed — Annotated</title>"
-        "<style>body{font:15px/1.6 system-ui;max-width:720px;margin:0 auto;padding:24px;color:#111}"
-        "h1{font-size:22px}.t{border:1px solid #e5e5e5;border-radius:12px;padding:14px 16px;margin:12px 0}"
-        ".q{font-style:italic}.m{font-size:13px;color:#666;margin-top:6px}"
-        ".k{font-size:12px;color:#999;text-transform:uppercase}a{color:#2f7fd0}</style>"
-        "</head><body><h1>Annotated — public feed</h1>" + cards + "</body></html>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Feed — Annotated</title>"
+        f"<style>{SITE_CSS}</style>"
+        "</head><body><div class='wrap'><p><a href='/'>⚑ Annotated</a></p>"
+        "<h1>Public feed</h1>" + cards + "</div></body></html>"
     )

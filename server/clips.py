@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import urllib.parse
 import time
 import urllib.parse
 import uuid
@@ -494,6 +495,13 @@ def clip_page(clip_id: str):
     src_href = _safe_href(source_url or "")
     src_link = (f'<a href="{src_href}" target=_blank rel=noopener>View original source</a>'
                 if src_href else "<span>Source link unavailable</span>")
+    share_text = urllib.parse.quote(f"Watch this clip on Annotated 🎬 {(comment or '')[:120]}")
+    share_url = (f"https://x.com/intent/tweet?text={share_text}"
+                 f"&url={urllib.parse.quote(base + '/c/' + clip_id)}")
+    share_btn = (f'<a href="{share_url}" target=_blank rel=noopener '
+                 'style="display:inline-block;margin-top:8px;font-size:13px;font-weight:700;'
+                 'color:#111;background:#ffd640;border-radius:8px;padding:6px 12px;'
+                 'text-decoration:none">𝕏 Share this clip</a>')
     return HTMLResponse(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Annotated clip — @{esc_handle}</title>
@@ -506,7 +514,7 @@ textarea{{width:100%;height:70px}}button{{padding:8px 16px;margin-top:8px;cursor
 <div class=top><h2>Annotated</h2><a href="/feed">Public feed</a></div>
 {media}
 <p>Clipped by <b>@{esc_handle}</b> · {duration_sec:g}s from {start_sec:g}s ·
-{src_link}</p>
+{src_link}<br>{share_btn}</p>
 {f"<p>{esc_comment}</p>" if esc_comment else ""}
 <div class=claim><b>Fair use?</b> If this clip misuses your content,
 <button onclick="fileClaim()">File a claim</button></div>

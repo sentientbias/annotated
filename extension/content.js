@@ -155,6 +155,7 @@
           <div class="tag" data-t="hot_take">🏷 hot take</div>
         </div>
         <textarea placeholder="Why? Add your receipt — link, quote, or reasoning…"></textarea>
+        <input id="ac-receipt" class="handle" placeholder="🔗 Receipt link (optional) — paste a source URL" maxlength="2000" />
         <input class="handle" placeholder="your handle (e.g. anon42)" maxlength="32" />
         <div class="meta">Posted publicly. Be sharp, cite sources, no doxxing.</div>
         <div class="row">
@@ -175,6 +176,7 @@
     const postBtn = ov.querySelector('.btn-post');
     const ta = ov.querySelector('textarea');
     const hi = ov.querySelector('.handle');
+    const ri = ov.querySelector('#ac-receipt');
     stances.forEach(el => el.addEventListener('click', () => {
       stances.forEach(x => x.className = 'stance');
       el.classList.add('sel-' + el.dataset.s);
@@ -191,10 +193,12 @@
         const base = await apiBase();
         const h = norm(hi.value).toLowerCase() || 'anon'; // server lowercases handles on insert
         await chrome.storage.sync.set({ [HANDLE_KEY]: h });
+        const receiptUrl = norm(ri.value);
+        const sources = /^https?:\/\//i.test(receiptUrl) ? [receiptUrl] : [];
         const res = await postJson(base + '/annotations', {
           url: normUrl(location.href), quote: ctx.text,
           prefix: ctx.prefix, suffix: ctx.suffix,
-          stance, tag, comment: ta.value.trim(), handle: h,
+          stance, tag, comment: ta.value.trim(), handle: h, sources,
         });
         if (!res.ok) throw new Error('server ' + res.status);
         ov.remove(); toast('Annotation posted ⚑');
