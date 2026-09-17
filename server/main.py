@@ -6,12 +6,16 @@ watch the trending disputes. SQLite-backed, Render-ready.
 import os
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from html import escape
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+import auth
+import clips
 
 DB_PATH = os.environ.get("ANNOTATED_DB", os.path.join(os.path.dirname(__file__), "annotated.db"))
 VALID_STANCES = {"dispute", "agree", "context"}
@@ -53,13 +57,69 @@ def init_db():
             created_at TEXT NOT NULL,
             PRIMARY KEY (follower, followee)
         );
+        CREATE TABLE IF NOT EXISTS clips (
+            id TEXT PRIMARY KEY,
+            source_url TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            start_sec REAL DEFAULT 0,
+            duration_sec REAL DEFAULT 30,
+            status TEXT NOT NULL DEFAULT 'processing',
+            file_path TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            handle TEXT NOT NULL,
+            comment TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_clips_created ON clips(created_at);
+        CREATE TABLE IF NOT EXISTS clip_comments (
+            id TEXT PRIMARY KEY,
+            clip_id TEXT NOT NULL,
+            handle TEXT NOT NULL,
+            text TEXT DEFAULT '',
+            audio_url TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cc_clip ON clip_comments(clip_id);
+        CREATE TABLE IF NOT EXISTS oauth_states (
+            state TEXT PRIMARY KEY,
+            verifier TEXT DEFAULT '',
+            provider TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS link_tokens (
+            token TEXT PRIMARY KEY,
+            handle TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS claims (
+            id TEXT PRIMARY KEY,
+            target_type TEXT DEFAULT '',
+            target_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            contact TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
         """
     )
+    for col in ("x_id", "google_id", "display_name"):
+        try:
+            con.execute(f"ALTER TABLE profiles ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
     con.commit()
     con.close()
 
 
 init_db()
+
+# shared connection for the auth/clips routers (they run background threads)
+_shared = sqlite3.connect(DB_PATH, check_same_thread=False)
+auth.init(_shared)
+clips.init(_shared)
+app.include_router(auth.router)
+app.include_router(clips.router)
 
 
 def now_iso():
@@ -202,3 +262,59 @@ def stats():
     n_users = con.execute("SELECT COUNT(*) c FROM profiles").fetchone()["c"]
     con.close()
     return {"annotations": n_ann, "handles": n_users}
+
+
+@app.get("/api/feed")
+def api_feed(limit: int = Query(default=50, le=200)):
+    """Newest annotations + clips, one combined public feed."""
+    con = db()
+    anns = con.execute(
+        "SELECT 'annotation' kind, id, quote, stance, comment, handle, url, created_at"
+        " FROM annotations ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    clps = con.execute(
+        "SELECT 'clip' kind, id, source_url url, source_type, status, handle, comment,"
+        " created_at FROM clips ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    con.close()
+    base = os.environ.get("PUBLIC_BASE_URL", "https://annotated-api.onrender.com")
+    items = [dict(r) for r in anns] + [dict(r) for r in clps]
+    for it in items:
+        if it["kind"] == "clip":
+            it["clip_url"] = f"{base}/c/{it['id']}"
+    items.sort(key=lambda x: x["created_at"], reverse=True)
+    return items[:limit]
+
+
+@app.get("/feed", response_class=HTMLResponse)
+def feed_page():
+    items = api_feed(limit=50)
+    cards = ""
+    for it in items:
+        if it["kind"] == "clip":
+            badge = "🎬 clip" if it.get("source_type") == "youtube" else "🎙 clip"
+            cards += (
+                f"<div class='t'><div class='k'>{badge} · {it.get('status')}</div>"
+                f"<div class='q'>{escape((it.get('comment') or '')[:220]) or '(no comment)'}</div>"
+                f"<div class='m'>@{escape(it['handle'])} · "
+                f"<a href='{it['clip_url']}'>open clip</a> · "
+                f"<a href='{escape(it['url'])}'>source</a></div></div>"
+            )
+        else:
+            cards += (
+                f"<div class='t'><div class='k'>⚑ {escape(it['stance'])}</div>"
+                f"<div class='q'>&ldquo;{escape(it['quote'][:220])}&rdquo;</div>"
+                f"<div class='m'>@{escape(it['handle'])} · {escape(it.get('comment','')[:120])} · "
+                f"<a href='{escape(it['url'])}'>{escape(it['url'][:60])}</a></div></div>"
+            )
+    cards = cards or "<p>Nothing yet. Clip a video or dispute a sentence.</p>"
+    return HTMLResponse(
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Feed — Annotated</title>"
+        "<style>body{font:15px/1.6 system-ui;max-width:720px;margin:0 auto;padding:24px;color:#111}"
+        "h1{font-size:22px}.t{border:1px solid #e5e5e5;border-radius:12px;padding:14px 16px;margin:12px 0}"
+        ".q{font-style:italic}.m{font-size:13px;color:#666;margin-top:6px}"
+        ".k{font-size:12px;color:#999;text-transform:uppercase}a{color:#2f7fd0}</style>"
+        "</head><body><h1>Annotated — public feed</h1>" + cards + "</body></html>"
+    )

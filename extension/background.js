@@ -15,6 +15,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) { console.warn('sidePanel failed', e); }
     })();
   }
+  if (msg.type === 'annotated:open-clip') {
+    (async () => {
+      const tabId = sender.tab && sender.tab.id;
+      try {
+        // stash context before opening, so the panel reads it on load
+        await chrome.storage.session.set({
+          annotated_panel: { clip_id: msg.clip_id },
+        });
+        await chrome.sidePanel.setOptions({
+          tabId, path: 'sidepanel.html', enabled: true,
+        });
+        await chrome.sidePanel.open({ tabId });
+      } catch (e) { console.warn('sidePanel clip failed', e); }
+    })();
+  }
 });
 
 chrome.runtime.onInstalled.addListener(() => {

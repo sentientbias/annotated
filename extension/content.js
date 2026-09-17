@@ -26,6 +26,17 @@
     const r = await chrome.storage.sync.get(HANDLE_KEY);
     return r[HANDLE_KEY] || '';
   }
+  const TOKEN_KEY = 'annotated_token';
+  async function authToken() {
+    const r = await chrome.storage.sync.get(TOKEN_KEY);
+    return r[TOKEN_KEY] || '';
+  }
+  async function postJson(url, body) {
+    const token = await authToken();
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['X-Annotated-Token'] = token;
+    return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  }
 
   /* ---------- shadow root ---------- */
   const host = document.createElement('div');
@@ -163,13 +174,10 @@
         const base = await apiBase();
         const h = norm(hi.value) || 'anon';
         await chrome.storage.sync.set({ [HANDLE_KEY]: h });
-        const res = await fetch(base + '/annotations', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: normUrl(location.href), quote: ctx.text,
-            prefix: ctx.prefix, suffix: ctx.suffix,
-            stance, comment: ta.value.trim(), handle: h,
-          }),
+        const res = await postJson(base + '/annotations', {
+          url: normUrl(location.href), quote: ctx.text,
+          prefix: ctx.prefix, suffix: ctx.suffix,
+          stance, comment: ta.value.trim(), handle: h,
         });
         if (!res.ok) throw new Error('server ' + res.status);
         ov.remove(); toast('Annotation posted ⚑');
@@ -257,10 +265,102 @@
     }
   }
 
+  /* ---------- YouTube clip capture ---------- */
+  function isWatchPage() {
+    return /(^|\.)youtube\.com$/.test(location.hostname) && location.pathname === '/watch';
+  }
+  let clipFab = null;
+  function hideClipFab() { if (clipFab) { clipFab.remove(); clipFab = null; } }
+  function maybeShowClipFab() {
+    hideClipFab();
+    if (!isWatchPage()) return;
+    clipFab = document.createElement('button');
+    clipFab.className = 'afab';
+    clipFab.textContent = '⚑ Clip 90s';
+    clipFab.style.left = 'auto';
+    clipFab.style.top = 'auto';
+    clipFab.style.right = '18px';
+    clipFab.style.bottom = '18px';
+    clipFab.addEventListener('mousedown', (e) => e.preventDefault());
+    clipFab.addEventListener('click', openClipComposer);
+    shadow.appendChild(clipFab);
+  }
+
+  function openClipComposer() {
+    const video = document.querySelector('video');
+    const startSec = video ? Math.max(0, Math.floor(video.currentTime || 0)) : 0;
+    const pageUrl = normUrl(location.href);
+    const titleEl = document.querySelector('h1.ytd-watch-metadata yt-formatted-string, h1.title yt-formatted-string');
+    const title = norm((titleEl && titleEl.textContent) || document.title.replace(/ - YouTube$/, ''));
+    const ov = document.createElement('div');
+    ov.className = 'overlay';
+    ov.innerHTML = `
+      <div class="card">
+        <h3>Clip up to 90 seconds</h3>
+        <div class="quote">${escapeHtml(title)}</div>
+        <div class="meta">${escapeHtml(pageUrl)}</div>
+        <div class="row" style="justify-content:flex-start;align-items:flex-end;margin-top:10px;">
+          <label style="margin:0;font-size:12px;color:#666;">Start (sec)
+            <input id="ac-start" type="number" min="0" value="${startSec}" style="width:90px;padding:8px;border:2px solid #ddd;border-radius:8px;display:block;margin-top:4px;" />
+          </label>
+          <label style="margin:0 0 0 12px;font-size:12px;color:#666;">Length (sec, max 90)
+            <input id="ac-dur" type="number" min="1" max="90" value="30" style="width:90px;padding:8px;border:2px solid #ddd;border-radius:8px;display:block;margin-top:4px;" />
+          </label>
+        </div>
+        <textarea id="ac-comment" placeholder="Why this clip? Add context…" style="margin-top:10px;"></textarea>
+        <input id="ac-handle" class="handle" placeholder="your handle (e.g. anon42)" maxlength="32" />
+        <div class="meta">Posted publicly. Clips are trimmed server-side and link back to the source video.</div>
+        <div class="row">
+          <button class="btn btn-cancel">Cancel</button>
+          <button class="btn btn-post">Post clip</button>
+        </div>
+      </div>`;
+    shadow.appendChild(ov);
+    const startInput = ov.querySelector('#ac-start');
+    const durInput = ov.querySelector('#ac-dur');
+    const commentInput = ov.querySelector('#ac-comment');
+    const handleInput = ov.querySelector('#ac-handle');
+    const postBtn = ov.querySelector('.btn-post');
+    handle().then(h => { if (h) handleInput.value = h; });
+    ov.querySelector('.btn-cancel').addEventListener('click', () => ov.remove());
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) ov.remove(); });
+    postBtn.addEventListener('click', async () => {
+      postBtn.disabled = true; postBtn.textContent = 'Clipping…';
+      const s = Math.max(0, parseInt(startInput.value, 10) || 0);
+      const d = Math.min(90, Math.max(1, parseInt(durInput.value, 10) || 30));
+      try {
+        const base = await apiBase();
+        const h = norm(handleInput.value) || 'anon';
+        await chrome.storage.sync.set({ [HANDLE_KEY]: h });
+        const res = await postJson(base + '/clips', {
+          source_url: pageUrl, source_type: 'youtube',
+          start_sec: s, duration_sec: d, handle: h,
+          comment: commentInput.value.trim(),
+        });
+        if (!res.ok) throw new Error('server ' + res.status);
+        const data = await res.json();
+        const clipId = data.id || data.clip_id;
+        const clipUrl = data.clip_url || data.url || (clipId ? base + '/clips/' + clipId : base + '/feed');
+        ov.remove();
+        toast('Clip posted: ' + clipUrl);
+        if (clipId) chrome.runtime.sendMessage({ type: 'annotated:open-clip', clip_id: clipId });
+      } catch (err) {
+        postBtn.disabled = false; postBtn.textContent = 'Post clip';
+        toast('Failed: ' + err.message);
+      }
+    });
+    setTimeout(() => commentInput.focus(), 50);
+  }
+
   // initial + SPA navigation
   let lastUrl = location.href;
   renderHighlights();
+  maybeShowClipFab();
   setInterval(() => {
-    if (location.href !== lastUrl) { lastUrl = location.href; setTimeout(renderHighlights, 800); }
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      setTimeout(renderHighlights, 800);
+      maybeShowClipFab();
+    }
   }, 1500);
 })();

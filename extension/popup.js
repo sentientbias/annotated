@@ -13,6 +13,45 @@
     e.preventDefault();
     chrome.tabs.create({ url: base + '/trending' });
   });
+  $('feed').addEventListener('click', (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: base + '/feed' });
+  });
+  $('xlogin').addEventListener('click', () => {
+    chrome.tabs.create({ url: base + '/auth/x/start' });
+  });
+  $('glogin').addEventListener('click', () => {
+    chrome.tabs.create({ url: base + '/auth/google/start' });
+  });
+  $('link').addEventListener('click', async () => {
+    const tok = $('token').value.trim();
+    if (!tok) return;
+    $('link').textContent = 'Linking…';
+    try {
+      const r = await fetch(base + '/auth/token/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: tok }),
+      });
+      if (!r.ok) throw new Error('server ' + r.status);
+      const d = await r.json();
+      if (!d.handle) throw new Error('no handle returned');
+      await chrome.storage.sync.set({ annotated_handle: d.handle, annotated_token: d.token || tok });
+      location.reload();
+    } catch (e) {
+      $('link').textContent = 'Failed — try again';
+      setTimeout(() => { $('link').textContent = 'Link account'; }, 1500);
+    }
+  });
+  $('signout').addEventListener('click', async () => {
+    await chrome.storage.sync.remove(['annotated_handle', 'annotated_token']);
+    location.reload();
+  });
+  (function renderAuth() {
+    const signed = !!(sync.annotated_token && sync.annotated_handle);
+    $('signedout').style.display = signed ? 'none' : 'block';
+    $('signedin').style.display = signed ? 'block' : 'none';
+    if (signed) $('who').textContent = '@' + sync.annotated_handle;
+  })();
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const url = new URL(tab.url); url.hash = '';

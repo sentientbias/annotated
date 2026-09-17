@@ -20,7 +20,20 @@ a { color: #2f7fd0; }
     <input id="api" placeholder="https://annotated-api.onrender.com" />
   </label>
   <button id="save">Save</button>
-  <div class="hint">Select any sentence on a page, hit <b>⚑ Dispute this</b>, and add your receipt. <a id="trend" href="#">Trending disputes →</a></div>
+  <hr style="border:none;border-top:1px solid #eee;margin:12px 0;" />
+  <div id="signedout">
+    <button id="xlogin">Sign in with X</button>
+    <button id="glogin" style="background:#fff;color:#111;border:2px solid #111;margin-top:8px;">Sign in with Google</button>
+    <label>Paste token (from web sign-in)
+      <input id="token" placeholder="paste token…" />
+    </label>
+    <button id="link">Link account</button>
+  </div>
+  <div id="signedin" style="display:none;">
+    <div class="row"><span>Signed in as</span><b id="who">–</b></div>
+    <button id="signout" style="background:#eee;color:#333;">Sign out</button>
+  </div>
+  <div class="hint">Select any sentence on a page, hit <b>⚑ Dispute this</b>, and add your receipt. <a id="trend" href="#">Trending disputes →</a> · <a id="feed" href="#">Public feed →</a></div>
 </main>
 <script src="popup.js"></script>
 </body></html>

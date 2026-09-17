@@ -1,13 +1,22 @@
 services:
   - type: web
     name: annotated-api
-    runtime: python
-    plan: free
-    buildCommand: "pip install -r server/requirements.txt"
-    startCommand: "uvicorn server.main:app --host 0.0.0.0 --port $PORT"
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
     envVars:
       - key: ANNOTATED_DB
         value: /data/annotated.db
+      - key: PUBLIC_BASE_URL
+        value: https://annotated-api.onrender.com
+      - key: X_CLIENT_ID
+        sync: false
+      - key: X_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
     disk:
       name: annotated-data
       mountPath: /data
