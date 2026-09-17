@@ -255,10 +255,18 @@
       m.replaceWith(t);
     });
     let anns;
+    let res = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const base = await apiBase();
+        res = await fetch(base + '/annotations?url=' + encodeURIComponent(normUrl(location.href)));
+        if (res.ok) break;
+        res = null;
+      } catch { res = null; }
+      if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+    }
+    if (!res) return;
     try {
-      const base = await apiBase();
-      const res = await fetch(base + '/annotations?url=' + encodeURIComponent(normUrl(location.href)));
-      if (!res.ok) return;
       anns = await res.json();
     } catch { return; }
     // group by quote

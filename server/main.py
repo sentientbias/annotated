@@ -780,6 +780,41 @@ def install_page():
     )
 
 
+@app.get("/demo-article", response_class=HTMLResponse)
+def demo_article():
+    """A self-contained demo article so anyone can try the extension instantly —
+    no paywall, no heavy trackers. Same-origin, so the extension just works."""
+    body = """
+    <p class='m'>Demo article · written for trying the Annotated extension — select any sentence to dispute it.</p>
+    <h1>AI coding agent startup Factory triples valuation to $5 billion in latest funding round</h1>
+    <p class='m'>By Annotated Demo Desk · September 2026 · 3 min read</p>
+    <p>Factory, the startup building AI agents that work across the software development lifecycle, has raised $200 million in fresh funding at a $5 billion valuation — roughly triple its previous valuation. The round marks one of the largest AI coding investments of the year and signals that investor appetite for developer tools has not cooled.</p>
+    <p>The company says its agents don't just autocomplete code but shepherd tasks across the full lifecycle: planning, writing, testing, and deploying software. Factory claims teams using its platform ship features twice as fast as those relying on conventional coding assistants.</p>
+    <p>AI-assisted coding has emerged as one of the most widely adopted uses of generative AI, drawing billions of dollars from investors as businesses seek to speed up software development and improve workforce productivity. Analysts estimate the AI coding tools market will be worth tens of billions within five years, though skeptics note that most enterprise pilots have yet to show durable returns.</p>
+    <p>Not everyone is convinced the valuations are justified. Critics argue that coding agents remain unreliable on large codebases and that the current funding frenzy mirrors the chatbot hype cycle of 2023. Factory's backers counter that agentic workflows are already displacing entire categories of software work.</p>
+    <p>The round was reported by multiple outlets this week. Whether Factory can turn a $5 billion price tag into lasting enterprise adoption is the question the next eighteen months will answer.</p>
+    <div class='t'><b>Try it:</b> select the sentence <i>"ship features twice as fast"</i> above, hit <b>⚑ Dispute this</b>, pick a stance, and attach a receipt link. Your annotation posts to the public feed.</div>
+    """
+    return HTMLResponse(
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Factory triples valuation to $5 billion — demo article | Annotated</title>"
+        "<meta property='og:title' content='Factory triples valuation to $5 billion (demo article)'>"
+        "<meta property='og:description' content='A demo article for trying the Annotated Chrome extension. Select any sentence to dispute it.'>"
+        "<meta name='twitter:card' content='summary'>"
+        f"<style>{SITE_CSS}"
+        ".article{max-width:680px;margin:0 auto}"
+        ".article p{font-size:18px;line-height:1.75;margin:0 0 1.2em}"
+        ".article h1{font-size:34px;line-height:1.2}"
+        "</style></head><body><div class='wrap'><div class='article'>"
+        "<p><a href='/'>⚑ Annotated</a> · <a href='/install'>Get the extension</a></p>"
+        f"{body}"
+        "<footer>Demo article for the Annotated extension. <a href='/feed'>Feed</a> · "
+        "<a href='/install'>Install</a></footer>"
+        "</div></div></body></html>"
+    )
+
+
 @app.get("/a/{annotation_id}", response_class=HTMLResponse)
 def annotation_page(annotation_id: int):
     """Public permalink for one annotation: quote, stance meter, receipts, replies, share."""
