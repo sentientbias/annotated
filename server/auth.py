@@ -8,17 +8,21 @@ verifies it via POST /auth/token/verify and stores the handle + token.
 
 import base64
 import hashlib
+import html
 import os
 import secrets
 import sqlite3
 import time
 import urllib.parse
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 router = APIRouter(prefix="/auth")
+
+TOKEN_TTL_SEC = 15 * 60  # oauth states and link tokens both expire after 15 minutes
 
 X_CLIENT_ID = os.environ.get("X_CLIENT_ID", "")
 X_CLIENT_SECRET = os.environ.get("X_CLIENT_SECRET", "")
@@ -38,6 +42,36 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _expired(created_at: str) -> bool:
+    """True when a '%Y-%m-%dT%H:%M:%SZ' timestamp is older than the token TTL."""
+    try:
+        ts = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return True
+    return (datetime.now(timezone.utc) - ts).total_seconds() > TOKEN_TTL_SEC
+
+
+def _take_oauth_state(state: str, provider: str):
+    """Return the verifier for a live oauth state, else None.
+
+    Expired states are treated as invalid and deleted, so they can't linger.
+    """
+    row = db.execute(
+        "SELECT verifier, created_at FROM oauth_states WHERE state=? AND provider=?",
+        (state, provider),
+    ).fetchone()
+    if not row:
+        return None
+    verifier, created_at = row
+    if _expired(created_at):
+        db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
+        db.commit()
+        return None
+    db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
+    db.commit()
+    return verifier
+
+
 def _pkce_pair():
     verifier = secrets.token_urlsafe(64)
     digest = hashlib.sha256(verifier.encode()).digest()
@@ -47,17 +81,18 @@ def _pkce_pair():
 
 def _link_token_page(handle: str, token: str, provider: str) -> HTMLResponse:
     label = "X" if provider == "x" else "Google"
-    html = f"""<!doctype html><html><head><meta charset=utf-8>
+    esc_handle = html.escape(handle or "", quote=True)
+    html_page = f"""<!doctype html><html><head><meta charset=utf-8>
 <title>Annotated — signed in</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:560px;margin:60px auto;
 padding:0 20px;text-align:center}}code{{font-size:28px;background:#f4f4f5;
 padding:12px 20px;border-radius:10px;letter-spacing:2px}}</style></head><body>
-<h2>Signed in with {label} as @{handle}</h2>
+<h2>Signed in with {label} as @{esc_handle}</h2>
 <p>Paste this code into the Annotated extension to link your account:</p>
 <code>{token}</code>
 <p style="color:#666">Keep this tab open until the extension confirms.</p>
 </body></html>"""
-    return HTMLResponse(html)
+    return HTMLResponse(html_page)
 
 
 def _issue_link_token(handle: str, provider: str, provider_id: str) -> str:
@@ -112,14 +147,10 @@ def x_start():
 @router.get("/x/callback")
 def x_callback(code: str = "", state: str = "", error: str = ""):
     if error:
-        return HTMLResponse(f"<h2>X sign-in failed: {error}</h2>", status_code=400)
-    row = db.execute(
-        "SELECT verifier FROM oauth_states WHERE state=? AND provider='x'", (state,)
-    ).fetchone()
-    if not row:
+        return HTMLResponse(f"<h2>X sign-in failed: {html.escape(error)}</h2>", status_code=400)
+    verifier = _take_oauth_state(state, "x")
+    if not verifier:
         return HTMLResponse("<h2>Invalid or expired login session. Try again.</h2>", status_code=400)
-    db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
-    db.commit()
     try:
         r = httpx.post(
             "https://api.twitter.com/2/oauth2/token",
@@ -128,7 +159,7 @@ def x_callback(code: str = "", state: str = "", error: str = ""):
                 "grant_type": "authorization_code",
                 "code": code,
                 "redirect_uri": f"{BASE}/auth/x/callback",
-                "code_verifier": row[0],
+                "code_verifier": verifier,
             },
             timeout=20,
         )
@@ -146,7 +177,8 @@ def x_callback(code: str = "", state: str = "", error: str = ""):
         token = _issue_link_token(handle, "x", data["id"])
         return _link_token_page(handle, token, "x")
     except Exception as e:
-        return HTMLResponse(f"<h2>X sign-in failed.</h2><p>{e}</p>", status_code=500)
+        print(f"x oauth callback failed: {e}")
+        return HTMLResponse("<h2>Sign-in failed. Please try again.</h2>", status_code=500)
 
 
 @router.get("/google/start")
@@ -175,14 +207,9 @@ def google_start():
 @router.get("/google/callback")
 def google_callback(code: str = "", state: str = "", error: str = ""):
     if error:
-        return HTMLResponse(f"<h2>Google sign-in failed: {error}</h2>", status_code=400)
-    row = db.execute(
-        "SELECT state FROM oauth_states WHERE state=? AND provider='google'", (state,)
-    ).fetchone()
-    if not row:
+        return HTMLResponse(f"<h2>Google sign-in failed: {html.escape(error)}</h2>", status_code=400)
+    if not _take_oauth_state(state, "google"):
         return HTMLResponse("<h2>Invalid or expired login session. Try again.</h2>", status_code=400)
-    db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
-    db.commit()
     try:
         r = httpx.post(
             "https://oauth2.googleapis.com/token",
@@ -210,7 +237,8 @@ def google_callback(code: str = "", state: str = "", error: str = ""):
         token = _issue_link_token(handle, "google", data["sub"])
         return _link_token_page(handle, token, "google")
     except Exception as e:
-        return HTMLResponse(f"<h2>Google sign-in failed.</h2><p>{e}</p>", status_code=500)
+        print(f"google oauth callback failed: {e}")
+        return HTMLResponse("<h2>Sign-in failed. Please try again.</h2>", status_code=500)
 
 
 @router.post("/token/verify")
@@ -218,8 +246,15 @@ async def token_verify(req: Request):
     body = await req.json()
     token = (body.get("token") or "").strip()
     row = db.execute(
-        "SELECT handle, provider FROM link_tokens WHERE token=?", (token,)
+        "SELECT handle, provider, created_at FROM link_tokens WHERE token=?", (token,)
     ).fetchone()
     if not row:
         return JSONResponse({"error": "Unknown or expired code"}, status_code=404)
+    if _expired(row[2]):
+        db.execute("DELETE FROM link_tokens WHERE token=?", (token,))
+        db.commit()
+        return JSONResponse({"error": "Unknown or expired code"}, status_code=404)
+    # Single-use: the token is consumed by a successful verification.
+    db.execute("DELETE FROM link_tokens WHERE token=?", (token,))
+    db.commit()
     return {"handle": row[0], "provider": row[1], "token": token}

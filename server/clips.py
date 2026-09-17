@@ -8,16 +8,21 @@ Clip pages at /c/{id} show the player, source link, a "File a claim" button,
 and text + audio comments.
 """
 
+import html
+import ipaddress
 import os
+import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 router = APIRouter()
@@ -30,6 +35,11 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 
 MAX_CLIP_SEC = 90
 
+# Same handle rule as main.clean_handle (letters/numbers/_ . -, 2-32 chars).
+HANDLE_RE = re.compile(r"^[a-zA-Z0-9_.-]{2,32}$")
+RESERVED_HANDLES = {"admin", "administrator", "support", "annotated", "system", "moderator"}
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}
+
 db: sqlite3.Connection
 _lock = threading.Lock()
 
@@ -41,6 +51,71 @@ def init(conn: sqlite3.Connection):
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _clean_clip_handle(h: str) -> str:
+    """Validate a handle the same way main.clean_handle does. Raises 400 if bad."""
+    h = (h or "anon").strip() or "anon"
+    if not HANDLE_RE.match(h):
+        raise HTTPException(400, "handle must be 2-32 chars: letters, numbers, _ . -")
+    if h.lower() in RESERVED_HANDLES:
+        raise HTTPException(400, "that handle is reserved")
+    return h
+
+
+def _rate_limited(handle: str, table: str, max_per_hour: int) -> bool:
+    """True when handle already has max_per_hour rows in table within the last hour."""
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+    with _lock:
+        n = db.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE handle=? AND created_at >= ?",
+            (handle, cutoff),
+        ).fetchone()[0]
+    return n >= max_per_hour
+
+
+def _validate_source_url(source_url: str, source_type: str) -> str:
+    """SSRF guard for clip sources. Returns '' when OK, else a plain error message.
+
+    This is what protects the podcast flow, which runs `ffmpeg -i source_url`
+    directly against the URL.
+    """
+    try:
+        u = urllib.parse.urlparse(source_url)
+    except Exception:
+        return "bad source_url"
+    if u.scheme not in ("http", "https"):
+        return "source_url must use http or https"
+    host = (u.hostname or "").lower()
+    if not host:
+        return "bad source_url"
+    if source_type == "youtube" and host not in YOUTUBE_HOSTS:
+        return "youtube source must be a youtube.com or youtu.be URL"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return "source host did not resolve"
+    for info in infos:
+        ip = info[4][0]
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return "source host resolved to a bad address"
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_multicast or addr.is_reserved or addr.is_unspecified):
+            return "source host resolves to a non-public address"
+    return ""
+
+
+def _safe_href(url: str) -> str:
+    """Escape a URL for use in an href attribute; only http(s) schemes allowed."""
+    try:
+        scheme = urllib.parse.urlparse(url).scheme
+    except Exception:
+        return ""
+    if scheme not in ("http", "https"):
+        return ""
+    return html.escape(url, quote=True)
 
 
 def _proxy() -> str:
@@ -236,7 +311,7 @@ async def create_clip(req: Request):
     body = await req.json()
     source_url = (body.get("source_url") or "").strip()
     source_type = (body.get("source_type") or "").strip()
-    handle = (body.get("handle") or "anon").strip()[:32] or "anon"
+    handle = _clean_clip_handle(body.get("handle"))
     comment = (body.get("comment") or "").strip()[:2000]
     try:
         start_sec = max(0.0, float(body.get("start_sec") or 0))
@@ -246,6 +321,11 @@ async def create_clip(req: Request):
     if not source_url or source_type not in ("youtube", "podcast"):
         return JSONResponse({"error": "source_url and source_type (youtube|podcast) required"},
                             status_code=400)
+    url_err = _validate_source_url(source_url, source_type)
+    if url_err:
+        return JSONResponse({"error": url_err}, status_code=400)
+    if _rate_limited(handle, "clips", 10):
+        return JSONResponse({"error": "rate limit exceeded"}, status_code=429)
     clip_id = uuid.uuid4().hex[:12]
     with _lock:
         db.execute(
@@ -304,10 +384,12 @@ async def add_comment(clip_id: str, req: Request):
     if not exists:
         return JSONResponse({"error": "not found"}, status_code=404)
     body = await req.json()
-    handle = (body.get("handle") or "anon").strip()[:32] or "anon"
+    handle = _clean_clip_handle(body.get("handle"))
     text = (body.get("text") or "").strip()[:2000]
     if not text:
         return JSONResponse({"error": "text required"}, status_code=400)
+    if _rate_limited(handle, "clip_comments", 60):
+        return JSONResponse({"error": "rate limit exceeded"}, status_code=429)
     with _lock:
         db.execute(
             "INSERT INTO clip_comments (id, clip_id, handle, text, created_at)"
@@ -324,9 +406,16 @@ async def add_audio_comment(clip_id: str, handle: str = Form("anon"),
     exists = db.execute("SELECT 1 FROM clips WHERE id=?", (clip_id,)).fetchone()
     if not exists:
         return JSONResponse({"error": "not found"}, status_code=404)
+    handle = _clean_clip_handle(handle)
+    if _rate_limited(handle, "clip_comments", 60):
+        return JSONResponse({"error": "rate limit exceeded"}, status_code=429)
     data = await file.read()
     if len(data) > 10 * 1024 * 1024:
         return JSONResponse({"error": "audio too large (10MB max)"}, status_code=400)
+    ctype = file.content_type or ""
+    if ctype and not (ctype.startswith("audio/") or ctype.startswith("video/")):
+        return JSONResponse({"error": "audio upload must be an audio or video file"},
+                            status_code=400)
     name = f"{clip_id}_{uuid.uuid4().hex[:8]}.webm"
     with open(os.path.join(AUDIO_DIR, name), "wb") as f:
         f.write(data)
@@ -334,7 +423,7 @@ async def add_audio_comment(clip_id: str, handle: str = Form("anon"),
         db.execute(
             "INSERT INTO clip_comments (id, clip_id, handle, text, audio_url, created_at)"
             " VALUES (?,?,?,?,?,?)",
-            (uuid.uuid4().hex[:12], clip_id, (handle or "anon")[:32],
+            (uuid.uuid4().hex[:12], clip_id, handle,
              "", f"/media/{name}", _now()),
         )
         db.commit()
@@ -382,24 +471,32 @@ def clip_page(clip_id: str):
     source_url, source_type, start_sec, duration_sec, status, file_path, handle, comment, created_at = row
     base = os.environ.get("PUBLIC_BASE_URL", "https://annotated-api.onrender.com")
     if status == "ready" and file_path:
-        media = (f'<video src="/media/{file_path}" controls style="width:100%;border-radius:12px"></video>'
+        esc_path = html.escape(file_path, quote=True)
+        media = (f'<video src="/media/{esc_path}" controls style="width:100%;border-radius:12px"></video>'
                  if file_path.endswith(".mp4") else
-                 f'<audio src="/media/{file_path}" controls style="width:100%"></audio>')
+                 f'<audio src="/media/{esc_path}" controls style="width:100%"></audio>')
     elif status == "processing":
         media = "<p>Your clip is being cut — refresh in a few seconds.</p>"
     else:
         media = "<p>Clip processing failed. The source may block downloads.</p>"
     comments = _comments(clip_id, base)
     comments_html = "".join(
-        f'<div class="c"><b>@{c["handle"]}</b> <span>{c["created_at"]}</span>'
-        + (f'<p>{c["text"]}</p>' if c.get("text") else "")
-        + (f'<audio src="{c["audio_url"]}" controls></audio>' if c.get("audio_url") else "")
+        f'<div class="c"><b>@{html.escape(c["handle"] or "", quote=True)}</b>'
+        f' <span>{html.escape(c["created_at"] or "")}</span>'
+        + (f'<p>{html.escape(c["text"] or "")}</p>' if c.get("text") else "")
+        + (f'<audio src="{html.escape(c["audio_url"] or "", quote=True)}" controls></audio>'
+           if c.get("audio_url") else "")
         + "</div>"
         for c in comments
     )
+    esc_handle = html.escape(handle or "", quote=True)
+    esc_comment = html.escape(comment or "")
+    src_href = _safe_href(source_url or "")
+    src_link = (f'<a href="{src_href}" target=_blank rel=noopener>View original source</a>'
+                if src_href else "<span>Source link unavailable</span>")
     return HTMLResponse(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>Annotated clip — @{handle}</title>
+<title>Annotated clip — @{esc_handle}</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:640px;margin:0 auto;padding:20px}}
 .c{{border-top:1px solid #eee;padding:10px 0}}.c span{{color:#888;font-size:12px}}
 textarea{{width:100%;height:70px}}button{{padding:8px 16px;margin-top:8px;cursor:pointer}}
@@ -408,9 +505,9 @@ textarea{{width:100%;height:70px}}button{{padding:8px 16px;margin-top:8px;cursor
 </style></head><body>
 <div class=top><h2>Annotated</h2><a href="/feed">Public feed</a></div>
 {media}
-<p>Clipped by <b>@{handle}</b> · {duration_sec:g}s from {start_sec:g}s ·
-<a href="{source_url}" target=_blank rel=noopener>View original source</a></p>
-{f"<p>{comment}</p>" if comment else ""}
+<p>Clipped by <b>@{esc_handle}</b> · {duration_sec:g}s from {start_sec:g}s ·
+{src_link}</p>
+{f"<p>{esc_comment}</p>" if esc_comment else ""}
 <div class=claim><b>Fair use?</b> If this clip misuses your content,
 <button onclick="fileClaim()">File a claim</button></div>
 <h3>Discussion ({len(comments)})</h3>
