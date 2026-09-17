@@ -43,6 +43,15 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _proxy() -> str:
+    """HTTP(S) proxy URL from ANNOTATED_PROXY_URL, or '' when unset.
+
+    Format: http://user:pass@host:port. Routes yt-dlp and the Cobalt API
+    around datacenter-IP blocks; ignored when empty.
+    """
+    return os.environ.get("ANNOTATED_PROXY_URL", "").strip()
+
+
 def _run(cmd, timeout=600):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
@@ -70,6 +79,7 @@ def _cobalt_fetch(source_url: str, tmpdir: str):
     import json as _json
     import urllib.request
     api = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools/")
+    proxy = _proxy()
     try:
         req = urllib.request.Request(
             api,
@@ -81,7 +91,13 @@ def _cobalt_fetch(source_url: str, tmpdir: str):
             }).encode(),
             headers={"Accept": "application/json", "Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        if proxy:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+            resp_cm = opener.open(req, timeout=60)
+        else:
+            resp_cm = urllib.request.urlopen(req, timeout=60)
+        with resp_cm as resp:
             data = _json.load(resp)
     except Exception as e:
         return None, f"cobalt api unreachable: {str(e)[:120]}"
@@ -92,8 +108,11 @@ def _cobalt_fetch(source_url: str, tmpdir: str):
         return None, "cobalt: no media url"
     out = os.path.join(tmpdir, "src.mp4")
     # Bound the download: never fill the persistent disk with a full source.
-    r = _run(["curl", "-sL", "--max-time", 300, "--max-filesize", "500M",
-              "-o", out, media_url], timeout=330)
+    curl = ["curl", "-sL", "--max-time", "300", "--max-filesize", "500M"]
+    if proxy:
+        curl += ["--proxy", proxy]
+    curl += ["-o", out, media_url]
+    r = _run(curl, timeout=330)
     if r.returncode == 63:
         return None, "cobalt: source exceeds 500MB cap"
     if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1024:
@@ -121,20 +140,24 @@ def _process_clip(clip_id: str):
     try:
         if source_type == "youtube":
             tmp = tempfile.mkdtemp()
+            proxy = _proxy()
             try:
                 section = f"*{_ts(start)}-{_ts(end)}"
                 # Strategy 1: yt-dlp, cycling player clients (YouTube bot-walls
                 # datacenter IPs on the default web client).
                 dl_ok, dl_err = False, ""
                 for client in ("android", "web_embedded", "tv", "default,-web", "default"):
-                    r = _run([
+                    ytdl = [
                         "yt-dlp", "--download-sections", section,
                         "--extractor-args", f"youtube:player_client={client}",
                         "-f", "bv*[height<=480]+ba/b[height<=480]/b",
                         "--merge-output-format", "mp4",
                         "-o", os.path.join(tmp, "src.%(ext)s"),
                         "--no-playlist", source_url,
-                    ])
+                    ]
+                    if proxy:
+                        ytdl[1:1] = ["--proxy", proxy]
+                    r = _run(ytdl)
                     if r.returncode == 0:
                         dl_ok = True
                         break
