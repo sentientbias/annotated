@@ -144,6 +144,10 @@ def init_db():
         con.execute("ALTER TABLE clips ADD COLUMN hidden INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    try:
+        con.execute("ALTER TABLE annotations ADD COLUMN hidden INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     con.commit()
     con.close()
 
@@ -290,7 +294,7 @@ STANCE_COLORS = {"dispute": "#e63c3c", "agree": "#2e9e5b", "context": "#2f7fd0"}
 
 def consensus_counts(con: sqlite3.Connection, url: str) -> dict:
     row = con.execute(
-        "SELECT stance, COUNT(*) c FROM annotations WHERE url=? GROUP BY stance", (url,)
+        "SELECT stance, COUNT(*) c FROM annotations WHERE url=? AND COALESCE(hidden,0)=0 GROUP BY stance", (url,)
     ).fetchall()
     counts = {"dispute": 0, "agree": 0, "context": 0}
     for r in row:
@@ -406,6 +410,21 @@ def reunfurl(annotation_id: int, h: ReunfurlIn):
     return {"ok": True, "unfurled": len(urls)}
 
 
+@app.post("/admin/annotations/{annotation_id}/hide")
+def hide_annotation(annotation_id: int, h: HideIn):
+    """Hide an annotation from all public surfaces (moderation / QA cleanup)."""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if not expected or not hmac.compare_digest(h.admin_token, expected):
+        raise HTTPException(403, "forbidden")
+    con = db()
+    cur = con.execute("UPDATE annotations SET hidden=1 WHERE id=?", (annotation_id,))
+    con.commit()
+    con.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "annotation not found")
+    return {"ok": True}
+
+
 # ---------- routes ----------
 @app.get("/health")
 def health():
@@ -463,7 +482,7 @@ def get_annotations(url: str = Query(min_length=1, max_length=2000)):
     con = db()
     rows = con.execute(
         "SELECT id, url, quote, prefix, suffix, stance, tag, comment, handle, created_at"
-        " FROM annotations WHERE url = ? ORDER BY created_at DESC LIMIT 500",
+        " FROM annotations WHERE url = ? AND COALESCE(hidden,0)=0 ORDER BY created_at DESC LIMIT 500",
         (url,),
     ).fetchall()
     ids = [r["id"] for r in rows]
@@ -549,11 +568,11 @@ def profile(handle: str):
     if not prow:
         con.close()
         raise HTTPException(404, "unknown handle")
-    count = con.execute("SELECT COUNT(*) c FROM annotations WHERE handle = ?", (handle,)).fetchone()["c"]
+    count = con.execute("SELECT COUNT(*) c FROM annotations WHERE handle = ? AND COALESCE(hidden,0)=0", (handle,)).fetchone()["c"]
     followers = con.execute("SELECT COUNT(*) c FROM follows WHERE followee = ?", (handle,)).fetchone()["c"]
     following = con.execute("SELECT COUNT(*) c FROM follows WHERE follower = ?", (handle,)).fetchone()["c"]
     recent = con.execute(
-        "SELECT quote, stance, comment, url, created_at FROM annotations WHERE handle = ?"
+        "SELECT quote, stance, comment, url, created_at FROM annotations WHERE handle = ? AND COALESCE(hidden,0)=0"
         " ORDER BY created_at DESC LIMIT 20",
         (handle,),
     ).fetchall()
@@ -590,7 +609,7 @@ def trending():
         " SUM(CASE WHEN stance='dispute' THEN 1 ELSE 0 END) disputes,"
         " SUM(CASE WHEN stance='agree' THEN 1 ELSE 0 END) agrees,"
         " SUM(CASE WHEN stance='context' THEN 1 ELSE 0 END) contexts"
-        " FROM annotations GROUP BY quote, url ORDER BY c DESC LIMIT 50"
+        " FROM annotations WHERE COALESCE(hidden,0)=0 GROUP BY quote, url ORDER BY c DESC LIMIT 50"
     ).fetchall()
     con.close()
     items = "".join(
@@ -612,7 +631,7 @@ def trending():
 @app.get("/stats")
 def stats():
     con = db()
-    n_ann = con.execute("SELECT COUNT(*) c FROM annotations").fetchone()["c"]
+    n_ann = con.execute("SELECT COUNT(*) c FROM annotations WHERE COALESCE(hidden,0)=0").fetchone()["c"]
     n_users = con.execute("SELECT COUNT(*) c FROM profiles").fetchone()["c"]
     con.close()
     return {"annotations": n_ann, "handles": n_users}
@@ -662,13 +681,13 @@ h2.sec{font-size:22px;margin:40px 0 4px}
 @app.get("/", response_class=HTMLResponse)
 def homepage():
     con = db()
-    n_ann = con.execute("SELECT COUNT(*) c FROM annotations").fetchone()["c"]
+    n_ann = con.execute("SELECT COUNT(*) c FROM annotations WHERE COALESCE(hidden,0)=0").fetchone()["c"]
     n_clips = con.execute(
         "SELECT COUNT(*) c FROM clips WHERE status='ready' AND COALESCE(hidden,0)=0"
     ).fetchone()["c"]
     n_users = con.execute("SELECT COUNT(*) c FROM profiles").fetchone()["c"]
     hot = con.execute(
-        "SELECT quote, url, COUNT(*) c FROM annotations GROUP BY quote, url"
+        "SELECT quote, url, COUNT(*) c FROM annotations WHERE COALESCE(hidden,0)=0 GROUP BY quote, url"
         " ORDER BY c DESC LIMIT 3"
     ).fetchall()
     con.close()
@@ -716,7 +735,7 @@ def annotation_page(annotation_id: int):
     """Public permalink for one annotation: quote, stance meter, receipts, replies, share."""
     con = db()
     r = con.execute(
-        "SELECT id, url, quote, stance, tag, comment, handle, created_at FROM annotations WHERE id=?",
+        "SELECT id, url, quote, stance, tag, comment, handle, created_at FROM annotations WHERE id=? AND COALESCE(hidden,0)=0",
         (annotation_id,),
     ).fetchone()
     if not r:
@@ -771,7 +790,7 @@ def api_feed(limit: int = Query(default=50, le=200)):
     con = db()
     anns = con.execute(
         "SELECT 'annotation' kind, id, quote, stance, tag, comment, handle, url, created_at"
-        " FROM annotations ORDER BY created_at DESC LIMIT ?",
+        " FROM annotations WHERE COALESCE(hidden,0)=0 ORDER BY created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
     clps = con.execute(
@@ -801,7 +820,7 @@ def feed_page():
         con = db()
         for r in con.execute(
             "SELECT url, stance, COUNT(*) c FROM annotations"
-            f" WHERE url IN ({','.join('?' * len(urls))}) GROUP BY url, stance",
+            f" WHERE COALESCE(hidden,0)=0 AND url IN ({','.join('?' * len(urls))}) GROUP BY url, stance",
             urls,
         ).fetchall():
             m = meters.setdefault(r["url"], {"dispute": 0, "agree": 0, "context": 0, "total": 0})
