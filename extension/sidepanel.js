@@ -52,20 +52,31 @@
       const r = await fetch(base + '/clips/' + encodeURIComponent(clipId));
       if (!r.ok) throw new Error('server ' + r.status);
       const clip = await r.json();
-      const title = clip.title || 'Untitled clip';
+      // Server has no title field: headline = clip comment, else "Clip by @handle".
+      const caption = (clip.comment || '').trim();
+      const title = caption || ('Clip by @' + (clip.handle || 'anon'));
+      const meta = [
+        clip.handle ? '@' + clip.handle : '',
+        clip.duration_sec ? Number(clip.duration_sec) + 's clip' : '',
+        clip.start_sec != null && clip.start_sec !== '' ? 'from ' + Number(clip.start_sec) + 's' : '',
+        clip.status && clip.status !== 'ready' ? clip.status : '',
+      ].filter(Boolean).join(' · ');
       const src = clip.source_url || clip.url || '';
       const videoSrc = clip.video_url || clip.file_url || clip.playback_url || '';
       const comments = clip.comments || clip.replies || [];
       $('quote').innerHTML =
         '<div style="font-style:normal;font-weight:700;">' + esc(title) + '</div>' +
+        (meta ? '<div style="font-size:12px;color:#666;margin-top:2px;">' + esc(meta) + '</div>' : '') +
         (src ? '<div style="font-size:12px;margin-top:4px;"><a href="' + esc(src) + '" target="_blank" rel="noopener">View source ↗</a></div>' : '') +
         (videoSrc ? '<video controls src="' + esc(videoSrc) + '" style="width:100%;margin-top:8px;border-radius:8px;"></video>' : '');
-      $('list').innerHTML = comments.length ? comments.map(c => `
+      $('list').innerHTML = comments.length ? comments.map(c => {
+        const text = c.text || c.comment || ''; // server returns "text"
+        return `
         <div class="ann">
           <span class="who">${esc(c.handle)}</span><span class="when">${c.created_at ? new Date(c.created_at).toLocaleString() : ''}</span>
-          ${c.comment ? '<div>' + esc(c.comment) + '</div>' : ''}
+          ${text ? '<div>' + esc(text) + '</div>' : ''}
           ${c.audio_url ? '<audio controls src="' + esc(c.audio_url) + '" style="width:100%;margin-top:6px;"></audio>' : ''}
-        </div>`).join('')
+        </div>`; }).join('')
         : '<span class="empty">No replies yet — record the first.</span>';
       wireRecorder(clipId);
     } catch (e) {
@@ -103,7 +114,7 @@
         const blob = new Blob(chunks, { type: 'audio/webm' });
         const fd = new FormData();
         fd.append('handle', me || 'anon');
-        fd.append('audio', blob, 'reply.webm');
+        fd.append('file', blob, 'reply.webm'); // server expects the File field named "file"
         try {
           const up = await fetch(base + '/clips/' + encodeURIComponent(clipId) + '/audio', {
             method: 'POST', headers: authHeaders(), body: fd,

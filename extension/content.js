@@ -172,7 +172,7 @@
       postBtn.disabled = true; postBtn.textContent = 'Posting…';
       try {
         const base = await apiBase();
-        const h = norm(hi.value) || 'anon';
+        const h = norm(hi.value).toLowerCase() || 'anon'; // server lowercases handles on insert
         await chrome.storage.sync.set({ [HANDLE_KEY]: h });
         const res = await postJson(base + '/annotations', {
           url: normUrl(location.href), quote: ctx.text,
@@ -330,7 +330,7 @@
       const d = Math.min(90, Math.max(1, parseInt(durInput.value, 10) || 30));
       try {
         const base = await apiBase();
-        const h = norm(handleInput.value) || 'anon';
+        const h = norm(handleInput.value).toLowerCase() || 'anon'; // server lowercases handles on insert
         await chrome.storage.sync.set({ [HANDLE_KEY]: h });
         const res = await postJson(base + '/clips', {
           source_url: pageUrl, source_type: 'youtube',
@@ -340,7 +340,7 @@
         if (!res.ok) throw new Error('server ' + res.status);
         const data = await res.json();
         const clipId = data.id || data.clip_id;
-        const clipUrl = data.clip_url || data.url || (clipId ? base + '/clips/' + clipId : base + '/feed');
+        const clipUrl = data.clip_url || data.url || (clipId ? base + '/c/' + clipId : base + '/feed');
         ov.remove();
         toast('Clip posted: ' + clipUrl);
         if (clipId) chrome.runtime.sendMessage({ type: 'annotated:open-clip', clip_id: clipId });
