@@ -32,10 +32,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.sync.get('annotated_api_base', (r) => {
     if (!r.annotated_api_base) {
       chrome.storage.sync.set({ annotated_api_base: 'https://annotated-api.onrender.com' });
     }
   });
+  // first install: land the user somewhere useful
+  if (details.reason === 'install') {
+    chrome.tabs.create({ url: 'https://annotated-api.onrender.com/install?fresh=1' });
+  }
 });

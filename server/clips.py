@@ -505,6 +505,11 @@ def clip_page(clip_id: str):
     return HTMLResponse(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Annotated clip — @{esc_handle}</title>
+<meta property="og:title" content="&#127916; Annotated clip by @{esc_handle}">
+<meta property="og:description" content="{html.escape(comment or '', quote=True)[:180]}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="{base}/c/{clip_id}">
+<meta name="twitter:card" content="summary">
 <style>body{{font-family:system-ui,sans-serif;max-width:640px;margin:0 auto;padding:20px}}
 .c{{border-top:1px solid #eee;padding:10px 0}}.c span{{color:#888;font-size:12px}}
 textarea{{width:100%;height:70px}}button{{padding:8px 16px;margin-top:8px;cursor:pointer}}
