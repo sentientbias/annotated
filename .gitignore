@@ -1,0 +1,6 @@
+demo-profile/
+demo/
+*.log
+*.pma
+__pycache__/
+*.pyc
