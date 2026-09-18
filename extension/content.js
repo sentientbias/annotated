@@ -106,8 +106,10 @@
     const idx = full.indexOf(sel.toString().trim().slice(0, 40));
     const prefix = idx > 0 ? norm(full.slice(Math.max(0, idx - 60), idx)) : '';
     const suffixSrc = idx >= 0 ? full.slice(idx + text.length, idx + text.length + 60) : '';
+    // NOTE: viewport coords (rect is viewport-relative) — the FAB is position:fixed,
+    // so do NOT add scrollX/scrollY here (that pushed the button off-screen on scrolled pages).
     return { text, prefix, suffix: norm(suffixSrc),
-             x: rect.left + window.scrollX, y: rect.bottom + window.scrollY };
+             x: rect.left, y: rect.bottom };
   }
 
   document.addEventListener('mouseup', () => {
@@ -118,7 +120,7 @@
       fab = document.createElement('button');
       fab.className = 'afab';
       fab.textContent = '⚑ Dispute this';
-      fab.style.left = Math.min(ctx.x, window.innerWidth - 140) + 'px';
+      fab.style.left = Math.max(8, Math.min(ctx.x, window.innerWidth - 150)) + 'px';
       fab.style.top = (ctx.y + 8) + 'px';
       fab.addEventListener('mousedown', (e) => e.preventDefault());
       fab.addEventListener('click', () => { hideFab(); openComposer(ctx); });

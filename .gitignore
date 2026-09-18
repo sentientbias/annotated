@@ -4,3 +4,4 @@ demo/
 *.pma
 __pycache__/
 *.pyc
+demo-video/*.webm

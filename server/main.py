@@ -692,6 +692,8 @@ a{color:#2f7fd0}
 footer{border-top:1px solid #eee;margin-top:48px;padding:24px;text-align:center;
   font-size:13px;color:#888}
 h2.sec{font-size:22px;margin:40px 0 4px}
+.claim{border:1px solid #f59e0b;background:#fffbeb;padding:10px 14px;border-radius:10px;margin:16px 0;font-size:14px}
+.claim button{padding:6px 14px;margin-left:6px;cursor:pointer;border:1px solid #d97706;border-radius:8px;background:#fff}
 """
 
 
@@ -713,7 +715,7 @@ def homepage():
         f"<div class='m'>{r['c']} annotations · "
         f"<a href='{escape(r['url'])}'>{escape(r['url'][:50])}</a></div></div>"
         for r in hot
-    ) or "<p style='color:#888'>No disputes yet — install the extension and fire the first shot.</p>"
+    ) or "<p style='color:#888'>No disputes yet — install the extension and post the first one.</p>"
     return HTMLResponse(
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -767,7 +769,7 @@ def install_page():
         "<p><a href='/'>⚑ Annotated</a></p>"
         "<h1>Install the extension <span style='font-size:14px;color:#888'>(60 seconds)</span></h1>"
         "<p>The extension isn't on the Chrome Web Store yet, so you sideload it once — "
-        "then it updates itself from the repo.</p>"
+        "re-download the zip any time you want the latest build.</p>"
         "<div class='t'><span class='stepn'>1</span><b>Download the code</b><br>"
         f"<a class='cta' style='font-size:14px;padding:10px 20px' href='{zip_url}'>⬇ Download annotated.zip</a>"
         "<p class='m'>Unzip it anywhere. Inside you'll find an <code>extension</code> folder — that's the part Chrome needs.</p></div>"
@@ -882,7 +884,18 @@ def annotation_page(annotation_id: int):
         f"<p>{escape(r['comment'])}</p>"
         + (f"<h4>🧾 Receipts ({len(srcs)})</h4>" + receipts if srcs else "") +
         f"<a class='share' href='{share}' target=_blank rel=noopener>𝕏 Share this dispute</a></div>"
+        f"<div class='claim'><b>Fair use?</b> If this annotation misuses your content, "
+        f"<button onclick='fileClaim({r['id']})'>File a claim</button></div>"
         f"<h2 class='sec'>Replies ({len(replies)})</h2>" + replies_html +
+        "<script>"
+        "function fileClaim(id){"
+        "var reason=prompt('Describe your claim (fair-use / takedown request):');"
+        "if(!reason)return;"
+        "fetch('/claims',{method:'POST',headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({target_type:'annotation',target_id:String(id),reason:reason})})"
+        ".then(r=>r.json()).then(d=>alert(d.message||d.error||'done'));"
+        "}"
+        "</script>"
         "</div></body></html>"
     )
 

@@ -26,7 +26,7 @@ Built for the [This Week in Startups $5,000 annotation bounty](https://x.com/twi
 - On any YouTube video, hit **⚑ Clip 90s** → pick start time + duration (≤ 90s)
 - The server cuts the segment, downscales video to 240p, and hosts it
 - Every clip page links back to the original source and carries a visible
-  **File a claim** button (fair-use dispute path)
+  **File a claim** button (fair-use dispute path) — annotation pages carry it too
 - Podcast episodes: same flow, audio-only
 
 **Social layer**

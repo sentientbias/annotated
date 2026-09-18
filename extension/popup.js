@@ -11,7 +11,7 @@
       return x.toString();
     } catch { return u; }
   };
-  const sync = await chrome.storage.sync.get(['annotated_api_base', 'annotated_handle']);
+  const sync = await chrome.storage.sync.get(['annotated_api_base', 'annotated_handle', 'annotated_token']);
   const base = (sync.annotated_api_base || 'https://annotated-api.onrender.com').replace(/\/+$/, '');
   $('api').value = sync.annotated_api_base || '';
   $('save').addEventListener('click', async () => {
